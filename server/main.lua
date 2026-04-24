@@ -1,0 +1,1539 @@
+--[[
+    COREX Inventory - Server Side (v2.0)
+    Tetris Grid System with Ground Items Support
+    Functional Lua | No OOP | Zombie Survival Optimized
+]]
+
+local Inventories = {}
+local DroppedItems = {}
+local PendingVehiclePurchases = {}
+local dropIdCounter = 0
+local slotCounter = 0
+
+local function ShallowCopy(tbl)
+    if type(tbl) ~= 'table' then
+        return {}
+    end
+
+    local copy = {}
+    for key, value in pairs(tbl) do
+        copy[key] = value
+    end
+    return copy
+end
+
+local function NextSlotId()
+    slotCounter = slotCounter + 1
+    return tostring(GetGameTimer()) .. '-' .. slotCounter
+end
+
+local function NormalizeVehicleKey(value)
+    if type(value) ~= 'string' then return nil end
+    return string.lower(value)
+end
+
+local function GenerateRentalPlate()
+    return ('CX%04d'):format(math.random(0, 9999))
+end
+
+local function GetVehicleCatalog(catalogId)
+    local ok, catalog = pcall(function()
+        return exports['corex-core']:GetVehicleCatalog(catalogId)
+    end)
+    return ok and catalog or nil
+end
+
+local function GetVehicleDefinition(catalogId, model)
+    local ok, vehicle = pcall(function()
+        return exports['corex-core']:GetVehicleDefinition(catalogId, model)
+    end)
+    return ok and vehicle or nil
+end
+
+Items = Items or {}
+Weapons = Weapons or {}
+Ammo = Ammo or {}
+
+-- -------------------------------------------------
+-- INTERNAL HELPERS (No COREX wrapper caching)
+-- -------------------------------------------------
+
+---Get player using corex-core export
+---@param src number
+---@return table|nil
+local function GetPlayer(src)
+    local success, player = pcall(function()
+        return exports['corex-core']:GetPlayer(src)
+    end)
+    return success and player or nil
+end
+
+---Check if player is busy (Action Lock)
+---@param src number
+---@return boolean
+local function IsBusy(src)
+    local success, busy = pcall(function()
+        return exports['corex-core']:IsBusy(src)
+    end)
+    return success and busy or false
+end
+
+---Set player busy state (Action Lock)
+---@param src number
+---@param state boolean
+local function SetBusy(src, state)
+    pcall(function()
+        exports['corex-core']:SetBusy(src, state)
+    end)
+end
+
+---Try to lock player action state in one step
+---@param src number
+---@return boolean
+local function TrySetBusy(src)
+    local success, locked = pcall(function()
+        return exports['corex-core']:TrySetBusy(src)
+    end)
+
+    if success then
+        return locked
+    end
+
+    if IsBusy(src) then
+        return false
+    end
+
+    SetBusy(src, true)
+    return true
+end
+
+---Clear player busy state
+---@param src number
+local function ClearBusy(src)
+    pcall(function()
+        exports['corex-core']:ClearBusy(src)
+    end)
+end
+
+---Check whether two players are close enough for direct interaction
+---@param src number
+---@param targetSrc number
+---@param maxDistance number|nil
+---@return boolean
+local function IsNearbyPlayer(src, targetSrc, maxDistance)
+    local success, nearby = pcall(function()
+        return exports['corex-core']:GetNearbyPlayers(src, maxDistance or 5.0)
+    end)
+
+    return success and type(nearby) == 'table' and nearby[targetSrc] ~= nil
+end
+
+local function IsPlayerNearCoords(src, coords, maxDistance)
+    if not coords or coords.x == nil or coords.y == nil or coords.z == nil then
+        return false
+    end
+
+    local ped = GetPlayerPed(src)
+    if not ped or ped == 0 then return false end
+
+    local playerCoords = GetEntityCoords(ped)
+    if not playerCoords then return false end
+
+    local cx, cy, cz = tonumber(coords.x), tonumber(coords.y), tonumber(coords.z)
+    if not cx or not cy or not cz then return false end
+
+    local maxDist = tonumber(maxDistance) or 3.0
+    local dx = playerCoords.x - cx
+    local dy = playerCoords.y - cy
+    local dz = playerCoords.z - cz
+
+    return (dx * dx + dy * dy + dz * dz) <= (maxDist * maxDist)
+end
+
+local function IsPlayerNearShop(src, shop)
+    if type(shop) ~= 'table' then return false end
+
+    local npc = shop.npc or {}
+    local coords = npc.coords or shop.coords or shop.location
+    if not coords then return false end
+
+    local interactDistance = tonumber(npc.interactDistance or shop.interactDistance) or 2.5
+    return IsPlayerNearCoords(src, coords, interactDistance + 2.0)
+end
+
+---Debug logging
+---@param level string
+---@param msg string
+local function GetAllItemsData()
+    local all = {}
+    for k, v in pairs(Items or {}) do all[k] = v end
+    for k, v in pairs(Weapons or {}) do all[k] = v end
+    for k, v in pairs(Ammo or {}) do all[k] = v end
+    return all
+end
+
+local function Debug(level, msg)
+    if not Config.Debug and level ~= 'Error' then return end
+    local colors = { Error = '^1', Warn = '^3', Info = '^2', Verbose = '^5' }
+    print((colors[level] or '^7') .. '[COREX-INVENTORY] ' .. msg .. '^0')
+end
+
+-- Initialize DB table on resource start
+CreateThread(function()
+    Wait(2000) -- Wait for oxmysql
+
+    exports.oxmysql:execute([[
+        CREATE TABLE IF NOT EXISTS `inventories` (
+            `id` INT AUTO_INCREMENT PRIMARY KEY,
+            `identifier` VARCHAR(60) NOT NULL,
+            `inventory_type` VARCHAR(50) NOT NULL DEFAULT 'player',
+            `inventory_id` VARCHAR(60) NOT NULL,
+            `items` LONGTEXT DEFAULT '[]',
+            `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            `hotbar` LONGTEXT DEFAULT '{}',
+            UNIQUE KEY `unique_inventory` (`identifier`, `inventory_type`, `inventory_id`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    ]], {}, function(result)
+        Debug('Info', 'Database table initialized')
+
+        local itemCount = 0
+        if Items then for _ in pairs(Items) do itemCount = itemCount + 1 end end
+        Debug('Verbose', 'Items loaded: ' .. itemCount)
+    end)
+end)
+
+local function GetItemData(itemName)
+    return Items[itemName] or Weapons[itemName] or Ammo[itemName]
+end
+
+local function GetWeaponDefinition(itemName)
+    if type(itemName) ~= 'string' then
+        return nil, nil
+    end
+
+    local upperName = string.upper(itemName)
+    if not string.find(upperName, 'WEAPON_', 1, true) then
+        upperName = 'WEAPON_' .. upperName
+    end
+
+    return Weapons[upperName], upperName
+end
+
+local function EnsureItemMetadata(itemName, metadata)
+    local safeMetadata = ShallowCopy(metadata)
+    local weaponDef = GetWeaponDefinition(itemName)
+
+    if weaponDef and weaponDef.ammoType and safeMetadata.ammo == nil then
+        safeMetadata.ammo = 0
+    end
+
+    return safeMetadata
+end
+
+local function FindInventoryItem(inv, itemName, slotId)
+    if not inv or not inv.items then
+        return nil
+    end
+
+    local wantedSlot = slotId ~= nil and tostring(slotId) or nil
+    local wantedName = type(itemName) == 'string' and itemName or nil
+    local wantedUpper = wantedName and string.upper(wantedName) or nil
+
+    for index, item in ipairs(inv.items) do
+        local itemSlot = item.slot ~= nil and tostring(item.slot) or nil
+        local itemUpper = type(item.name) == 'string' and string.upper(item.name) or nil
+        local slotMatches = (not wantedSlot) or (itemSlot == wantedSlot)
+        local nameMatches = (not wantedName) or item.name == wantedName or itemUpper == wantedUpper
+
+        if slotMatches and nameMatches then
+            return item, index
+        end
+    end
+
+    return nil
+end
+
+local function GetInventoryItemCount(inv, itemName)
+    if not inv or not inv.items or type(itemName) ~= 'string' then
+        return 0
+    end
+
+    local total = 0
+    for _, item in ipairs(inv.items) do
+        if item.name == itemName then
+            total = total + (tonumber(item.count) or 0)
+        end
+    end
+
+    return total
+end
+
+local function CalculateWeight(items)
+    local weight = 0.0
+    for _, item in ipairs(items) do
+        local data = GetItemData(item.name)
+        if data then
+            weight = weight + (data.weight * item.count)
+        end
+    end
+    return weight
+end
+
+local function IsSpotFree(inventory, x, y, w, h, ignoreSlot)
+    if x < 1 or y < 1 or (x + w - 1) > Config.GridWidth or (y + h - 1) > Config.GridHeight then
+        return false
+    end
+
+    for _, item in ipairs(inventory.items) do
+        if item.slot ~= ignoreSlot then
+            local data = GetItemData(item.name)
+            local iW = data and data.size and data.size.w or 1
+            local iH = data and data.size and data.size.h or 1
+
+            local itemRight = item.x + iW - 1
+            local itemBottom = item.y + iH - 1
+            local newRight = x + w - 1
+            local newBottom = y + h - 1
+
+            local overlapsX = not (newRight < item.x or x > itemRight)
+            local overlapsY = not (newBottom < item.y or y > itemBottom)
+
+            if overlapsX and overlapsY then
+                return false
+            end
+        end
+    end
+
+    return true
+end
+
+local function FindFreeSpot(inventory, itemName)
+    local data = GetItemData(itemName)
+    if not data then return nil end
+
+    local w = data.size and data.size.w or 1
+    local h = data.size and data.size.h or 1
+
+    for y = 1, Config.GridHeight do
+        for x = 1, Config.GridWidth do
+            if IsSpotFree(inventory, x, y, w, h) then
+                return {x = x, y = y}
+            end
+        end
+    end
+
+    return nil
+end
+
+local function GetIdentifier(src)
+    local player = GetPlayer(src)
+    if player then
+        return player.identifier
+    end
+    local ok, id = pcall(function()
+        return exports['corex-core']:GetCoreObject()
+    end)
+    if ok and id and id.Functions then
+        return id.Functions.GetIdentifier(src, 'license')
+    end
+    return nil
+end
+
+local function Notify(src, message, type)
+    TriggerClientEvent('corex:notify', src, message, type or 'info')
+end
+
+local function LoadInventory(src)
+    local id = GetIdentifier(src)
+    if not id then return end
+
+    exports.oxmysql:query(
+        'SELECT * FROM inventories WHERE identifier = ? AND inventory_type = ? LIMIT 1',
+        {id, 'player'},
+        function(results)
+            local result = results and results[1]
+            if result and result.items then
+                local items = json.decode(result.items) or {}
+                local hotbar = result.hotbar and json.decode(result.hotbar) or {}
+
+                Inventories[src] = {
+                    items = items,
+                    hotbar = hotbar,
+                    weight = CalculateWeight(items),
+                    maxWeight = Config.MaxWeight
+                }
+
+                Debug('Info', 'Loaded ' .. #items .. ' items for player ' .. src)
+            else
+                Inventories[src] = {
+                    items = {},
+                    hotbar = {},
+                    weight = 0.0,
+                    maxWeight = Config.MaxWeight
+                }
+                exports.oxmysql:insert(
+                    'INSERT INTO inventories (identifier, inventory_type, inventory_id, items, hotbar) VALUES (?, ?, ?, ?, ?)',
+                    {id, 'player', id, '[]', '{}'}
+                )
+
+                Debug('Info', 'Created new inventory for player ' .. src)
+            end
+
+            SetTimeout(1000, function()
+                TriggerClientEvent('corex-inventory:client:syncInventory', src, Inventories[src].items)
+            end)
+        end
+    )
+end
+
+---Persist inventory to DB immediately (used for forced flushes and drop/disconnect paths).
+---@param src number
+local function FlushInventory(src)
+    local id = GetIdentifier(src)
+    local inv = Inventories[src]
+    if not id or not inv then return end
+
+    local itemsJson = json.encode(inv.items)
+    local hotbarJson = json.encode(inv.hotbar or {})
+
+    exports.oxmysql:execute(
+        'UPDATE inventories SET items = ?, hotbar = ? WHERE identifier = ? AND inventory_type = ?',
+        {itemsJson, hotbarJson, id, 'player'},
+        function(result)
+            local rows = 0
+            if type(result) == 'number' then
+                rows = result
+            elseif type(result) == 'table' then
+                rows = tonumber(result.affectedRows) or tonumber(result.rowsAffected) or 0
+            end
+
+            if rows > 0 then
+                inv.isDirty = false
+            else
+                Debug('Warn', 'Flush reported 0 rows affected for source ' .. tostring(src))
+                inv.isDirty = false
+            end
+        end
+    )
+end
+
+---Mark inventory dirty and push a fresh sync to the owning client.
+---Actual DB write is deferred to the batched auto-save loop (every 30s),
+---reducing query count from dozens-per-minute-per-player to at most 2/min.
+---@param src number
+---@param pushSync boolean|nil
+local function SaveInventory(src, pushSync)
+    local inv = Inventories[src]
+    if not inv then return end
+
+    inv.isDirty = true
+    if pushSync ~= false then
+        TriggerClientEvent('corex-inventory:client:syncInventory', src, inv.items)
+    end
+end
+
+local function SyncInventoryToClient(src)
+    if not Inventories[src] then return end
+    TriggerClientEvent('corex-inventory:client:syncInventory', src, Inventories[src].items)
+end
+
+local function BroadcastNearby(eventName, coords, radius, ...)
+    local players = GetPlayers()
+    for _, srcStr in ipairs(players) do
+        local src = tonumber(srcStr)
+        local ped = GetPlayerPed(src)
+        if ped and ped ~= 0 then
+            local pc = GetEntityCoords(ped)
+            if #(pc - coords) <= radius then
+                TriggerClientEvent(eventName, src, ...)
+            end
+        end
+    end
+end
+
+local function BroadcastDroppedItems()
+    TriggerClientEvent('corex-inventory:client:syncDroppedItems', -1, DroppedItems)
+end
+
+local function DropItem(src, itemName, count, slot, coords)
+    if not TrySetBusy(src) then
+        Debug('Warn', 'DropItem blocked: Player ' .. src .. ' is busy')
+        return false
+    end
+
+    local inv = Inventories[src]
+    if not inv then
+        ClearBusy(src)
+        return false
+    end
+
+    if coords and coords.x then
+        local ped = GetPlayerPed(src)
+        if ped and ped ~= 0 then
+            local pc = GetEntityCoords(ped)
+            local dx, dy, dz = pc.x - coords.x, pc.y - coords.y, pc.z - (coords.z or pc.z)
+            if (dx * dx + dy * dy + dz * dz) > 100.0 then
+                Debug('Warn', ('DropItem rejected: drop coords too far from ped (src=%d)'):format(src))
+                ClearBusy(src)
+                return false
+            end
+        end
+    end
+
+    local itemIndex = nil
+    local item = nil
+
+    if slot then
+        for i, it in ipairs(inv.items) do
+            if tostring(it.slot) == tostring(slot) and it.name == itemName then
+                itemIndex = i
+                item = it
+                break
+            end
+        end
+    end
+
+    if not item and itemName then
+        for i, it in ipairs(inv.items) do
+            if it.name == itemName then
+                itemIndex = i
+                item = it
+                break
+            end
+        end
+    end
+
+    if not item then
+        ClearBusy(src)
+        Debug('Warn', ('DropItem rejected: item not found (src=%d name=%s)'):format(src, tostring(itemName)))
+        return false
+    end
+
+    if type(count) == 'number' and (count < 1 or count > item.count) then
+        ClearBusy(src)
+        Debug('Warn', ('DropItem rejected: invalid count (src=%d req=%d have=%d)'):format(src, count, item.count))
+        return false
+    end
+
+    local data = GetItemData(item.name)
+    local dropCount = math.min(count or item.count, item.count)
+
+    if item.count > dropCount then
+        item.count = item.count - dropCount
+    else
+        table.remove(inv.items, itemIndex)
+    end
+
+    if data then
+        inv.weight = inv.weight - (data.weight * dropCount)
+    end
+
+    dropIdCounter = dropIdCounter + 1
+    local dropId = 'drop_' .. dropIdCounter .. '_' .. os.time()
+
+    DroppedItems[dropId] = {
+        name = itemName,
+        count = dropCount,
+        coords = coords or vector3(0, 0, 0),
+        gridX = coords and coords.gridX or 1,
+        gridY = coords and coords.gridY or 1,
+        prop = data and data.prop or 'prop_med_bag_01b',
+        metadata = ShallowCopy(item.metadata),
+        droppedBy = src,
+        droppedAt = os.time()
+    }
+
+    SaveInventory(src)
+    TriggerClientEvent('corex-inventory:client:update', src, inv)
+    exports['corex-core']:BroadcastNearby(coords or vector3(0,0,0), 500.0, 'corex-inventory:client:itemDropped', dropId, DroppedItems[dropId])
+
+    local upperName = string.upper(itemName)
+    if not string.find(upperName, 'WEAPON_') then
+        upperName = 'WEAPON_' .. upperName
+    end
+    if Weapons and Weapons[upperName] then
+        TriggerClientEvent('corex-inventory:client:weaponDropConfirmed', src, upperName)
+    end
+
+    Debug('Info', 'Item dropped: ' .. itemName .. ' x' .. dropCount .. ' by player ' .. src)
+
+    ClearBusy(src)
+    return true
+end
+
+local function PickupItem(src, dropId, gridX, gridY)
+    -- ACTION LOCK: Prevent duping
+    if not TrySetBusy(src) then
+        Debug('Warn', 'PickupItem blocked: Player ' .. src .. ' is busy')
+        return false
+    end
+
+    local dropData = DroppedItems[dropId]
+    if not dropData then
+        ClearBusy(src)
+        return false
+    end
+
+    local pickupDistance = (Config.PickupDistance or 3.0) + 1.0
+    if not IsPlayerNearCoords(src, dropData.coords, pickupDistance) then
+        Debug('Warn', ('Pickup rejected: player %d too far from %s'):format(src, tostring(dropId)))
+        ClearBusy(src)
+        return false
+    end
+
+    local inv = Inventories[src]
+    if not inv then
+        ClearBusy(src)
+        return false
+    end
+
+    local data = GetItemData(dropData.name)
+    if not data then
+        ClearBusy(src)
+        return false
+    end
+
+    local w = data.size and data.size.w or 1
+    local h = data.size and data.size.h or 1
+
+    if not IsSpotFree(inv, gridX, gridY, w, h) then
+        local freeSpot = FindFreeSpot(inv, dropData.name)
+        if not freeSpot then
+            Debug('Warn', 'Pickup failed: No space')
+            ClearBusy(src)
+            return false
+        end
+        gridX = freeSpot.x
+        gridY = freeSpot.y
+    end
+
+    local addWeight = data.weight * dropData.count
+    if inv.weight + addWeight > inv.maxWeight then
+        Debug('Warn', 'Pickup failed: Too heavy')
+        ClearBusy(src)
+        return false
+    end
+
+    table.insert(inv.items, {
+        name = dropData.name,
+        count = dropData.count,
+        x = gridX,
+        y = gridY,
+        slot = NextSlotId(),
+        metadata = EnsureItemMetadata(dropData.name, dropData.metadata)
+    })
+
+    inv.weight = inv.weight + addWeight
+    DroppedItems[dropId] = nil
+
+    SaveInventory(src)
+    TriggerClientEvent('corex-inventory:client:update', src, inv)
+    local dropCoords = dropData.coords or vector3(0,0,0)
+    exports['corex-core']:BroadcastNearby(dropCoords, 500.0, 'corex-inventory:client:itemPickedUp', dropId)
+
+    Debug('Info', 'Item picked up: ' .. dropData.name .. ' x' .. dropData.count .. ' by player ' .. src)
+
+    ClearBusy(src)
+    return true
+end
+
+local function AddItem(src, itemName, count, metadata, x, y)
+    count = count or 1
+    metadata = EnsureItemMetadata(itemName, metadata)
+
+    local inv = Inventories[src]
+    if not inv then return false, 'No inventory' end
+
+    local data = GetItemData(itemName)
+    if not data then return false, 'Item not found' end
+
+    local addWeight = data.weight * count
+    if inv.weight + addWeight > inv.maxWeight then
+        return false, 'Too heavy'
+    end
+
+    if data.stackable then
+        for _, item in ipairs(inv.items) do
+            if item.name == itemName then
+                local canAdd = data.maxStack - item.count
+                if canAdd >= count then
+                    item.count = item.count + count
+                    inv.weight = inv.weight + addWeight
+                    SaveInventory(src)
+                    TriggerClientEvent('corex-inventory:client:update', src, inv)
+                    return true
+                end
+            end
+        end
+    end
+
+    local pos
+    if x and y then
+        local w = data.size and data.size.w or 1
+        local h = data.size and data.size.h or 1
+        if IsSpotFree(inv, x, y, w, h) then
+            pos = {x = x, y = y}
+        end
+    end
+
+    if not pos then
+        pos = FindFreeSpot(inv, itemName)
+    end
+
+    if not pos then
+        return false, 'No space'
+    end
+
+    table.insert(inv.items, {
+        name = itemName,
+        count = count,
+        x = pos.x,
+        y = pos.y,
+        slot = NextSlotId(),
+        metadata = ShallowCopy(metadata)
+    })
+
+    inv.weight = inv.weight + addWeight
+    SaveInventory(src)
+    TriggerClientEvent('corex-inventory:client:update', src, inv)
+
+    return true
+end
+
+local function RemoveItem(src, itemName, count)
+    count = count or 1
+    local inv = Inventories[src]
+    if not inv then return false end
+
+    for i, item in ipairs(inv.items) do
+        if item.name == itemName then
+            local data = GetItemData(itemName)
+
+            if item.count > count then
+                item.count = item.count - count
+                if data then inv.weight = inv.weight - (data.weight * count) end
+                SaveInventory(src)
+                TriggerClientEvent('corex-inventory:client:update', src, inv)
+                return true
+            elseif item.count == count then
+                if data then inv.weight = inv.weight - (data.weight * count) end
+                table.remove(inv.items, i)
+                SaveInventory(src)
+                TriggerClientEvent('corex-inventory:client:update', src, inv)
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+RegisterNetEvent('corex-inventory:server:load', function()
+    LoadInventory(source)
+end)
+
+RegisterNetEvent('corex-inventory:server:requestDroppedItems', function()
+    TriggerClientEvent('corex-inventory:client:syncDroppedItems', source, DroppedItems)
+end)
+
+RegisterNetEvent('corex-inventory:server:open', function()
+    local src = source
+    local inv = Inventories[src]
+
+    if inv then
+        local allItems = GetAllItemsData()
+
+        TriggerClientEvent('corex-inventory:client:open', src, {
+            items = inv.items,
+            weight = inv.weight,
+            maxWeight = inv.maxWeight,
+            grid = {w = Config.GridWidth, h = Config.GridHeight},
+            itemsData = allItems
+        })
+    end
+end)
+
+RegisterNetEvent('corex-inventory:server:move', function(slotId, newX, newY)
+    local src = source
+    if type(slotId) ~= 'string' and type(slotId) ~= 'number' then return end
+    if type(newX) ~= 'number' or type(newY) ~= 'number' then return end
+    local inv = Inventories[src]
+    if not inv then return end
+
+    local item = nil
+    for _, i in ipairs(inv.items) do
+        if tostring(i.slot) == tostring(slotId) then
+            item = i
+            break
+        end
+    end
+
+    if not item then return end
+
+    local data = GetItemData(item.name)
+    local w = data and data.size and data.size.w or 1
+    local h = data and data.size and data.size.h or 1
+
+    if IsSpotFree(inv, newX, newY, w, h, slotId) then
+        item.x = newX
+        item.y = newY
+        SaveInventory(src)
+        Debug('Verbose', 'Moved item ' .. item.name .. ' to ' .. newX .. ',' .. newY)
+    else
+        Debug('Warn', 'Move blocked: Collision detected')
+    end
+
+    TriggerClientEvent('corex-inventory:client:update', src, inv)
+end)
+
+RegisterNetEvent('corex-inventory:server:use', function(itemName, slotId)
+    local src = source
+    if type(itemName) ~= 'string' then return end
+    local inv = Inventories[src]
+    if not inv then return end
+
+    local itemData = {}
+    local item = FindInventoryItem(inv, itemName, slotId)
+    if not item then
+        Debug('Warn', ('Use rejected: player %d does not have %s'):format(src, tostring(itemName)))
+        return
+    end
+
+    itemData = {
+        slot = item.slot,
+        count = item.count,
+        x = item.x,
+        y = item.y,
+        metadata = EnsureItemMetadata(item.name, item.metadata)
+    }
+    itemData.ammo = itemData.metadata.ammo
+    itemName = item.name
+
+    TriggerClientEvent('corex-inventory:client:useItem', src, itemName, itemData)
+end)
+
+RegisterNetEvent('corex-inventory:server:removeUsedAmmo', function(ammoName, count)
+    local src = source
+    if type(ammoName) ~= 'string' then return end
+    RemoveItem(src, ammoName, count or 1)
+end)
+
+RegisterNetEvent('corex-inventory:server:drop', function(itemName, count, slot, coords)
+    if type(itemName) ~= 'string' then return end
+    DropItem(source, itemName, count, slot, coords)
+end)
+
+RegisterNetEvent('corex-inventory:server:pickup', function(dropId, x, y)
+    if type(dropId) ~= 'string' then return end
+    PickupItem(source, dropId, x or 1, y or 1)
+end)
+
+-- Find next available ground slot for loot
+local function FindNextGroundSlot(itemWidth, itemHeight)
+    local gridCols = 8
+    local gridRows = 10
+    local occupied = {}
+
+    -- Mark ALL slots that are occupied (including multi-slot items)
+    for _, item in pairs(DroppedItems) do
+        if item.gridX and item.gridY then
+            local itemData = GetItemData(item.name)
+            local size = itemData and itemData.size or {w = 1, h = 1}
+            local w = size.w or 1
+            local h = size.h or 1
+
+            -- Mark all cells this item occupies
+            for dy = 0, h - 1 do
+                for dx = 0, w - 1 do
+                    local key = (item.gridX + dx) .. ',' .. (item.gridY + dy)
+                    occupied[key] = true
+                end
+            end
+        end
+    end
+
+    -- Find first free slot that can fit this item
+    for row = 1, gridRows do
+        for col = 1, gridCols do
+            -- Check if item fits starting from this position
+            local canFit = true
+
+            -- Check if item goes beyond grid boundaries
+            if col + itemWidth - 1 > gridCols or row + itemHeight - 1 > gridRows then
+                canFit = false
+            else
+                -- Check all cells the item would occupy
+                for dy = 0, itemHeight - 1 do
+                    for dx = 0, itemWidth - 1 do
+                        local key = (col + dx) .. ',' .. (row + dy)
+                        if occupied[key] then
+                            canFit = false
+                            break
+                        end
+                    end
+                    if not canFit then break end
+                end
+            end
+
+            if canFit then
+                return col, row
+            end
+        end
+    end
+
+    -- If all slots full, start from beginning (will overlap)
+    return 1, 1
+end
+
+-- Add loot item directly to ground (for zombie drops, etc.)
+AddEventHandler('corex-inventory:server:addLootItem', function(src, itemName, amount, coords)
+    local itemData = GetItemData(itemName)
+    if not itemData then
+        Debug('Error', 'Cannot drop loot: Unknown item ' .. itemName)
+        return
+    end
+
+    local size = itemData.size or {w = 1, h = 1}
+    local itemWidth = size.w or 1
+    local itemHeight = size.h or 1
+    local gridX, gridY = FindNextGroundSlot(itemWidth, itemHeight)
+
+    local dropId = 'loot_' .. math.random(100000, 999999)
+    DroppedItems[dropId] = {
+        name = itemName,
+        count = amount or 1,
+        coords = coords or {x = 0, y = 0, z = 0},
+        gridX = gridX,
+        gridY = gridY,
+        prop = itemData.prop or 'prop_med_bag_01b',
+        droppedAt = os.time()
+    }
+
+    local lootCoords = coords and vector3(coords.x or 0, coords.y or 0, coords.z or 0) or vector3(0,0,0)
+    exports['corex-core']:BroadcastNearby(lootCoords, 500.0, 'corex-inventory:client:itemDropped', dropId, DroppedItems[dropId])
+    Debug('Info', 'Loot dropped: ' .. itemName .. ' x' .. (amount or 1))
+end)
+
+RegisterNetEvent('corex-inventory:server:give', function(targetPlayer, itemName, count, slot)
+    local src = source
+    local targetSrc = tonumber(targetPlayer)
+
+    if not targetSrc or targetSrc == src then
+        Debug('Warn', 'Give failed: Invalid target')
+        return
+    end
+
+    if type(itemName) ~= 'string' or #itemName == 0 or #itemName > 100 then return end
+    count = tonumber(count) or 1
+    if count ~= count or count == math.huge then return end
+    count = math.floor(count)
+    if count < 1 or count > 9999 then return end
+
+    if slot == nil then return end
+    local slotStr = tostring(slot)
+    if #slotStr == 0 or #slotStr > 64 then return end
+
+    local srcInvCheck = Inventories[src]
+    if not srcInvCheck then return end
+
+    local slotOwned = false
+    for _, it in ipairs(srcInvCheck.items) do
+        if tostring(it.slot) == slotStr and it.name == itemName then
+            slotOwned = true
+            break
+        end
+    end
+    if not slotOwned then
+        Debug('Warn', ('Give rejected: slot %s not owned by %d'):format(slotStr, src))
+        return
+    end
+
+    if not IsNearbyPlayer(src, targetSrc, 5.0) then
+        Debug('Warn', 'Give failed: Target too far away')
+        Notify(src, 'Target is too far away', 'error')
+        return
+    end
+
+    -- ACTION LOCK: Prevent duping on both players
+    if not TrySetBusy(src) then
+        Debug('Warn', 'Give blocked: Source player is busy')
+        return
+    end
+
+    if not TrySetBusy(targetSrc) then
+        Debug('Warn', 'Give blocked: Target player is busy')
+        ClearBusy(src)
+        return
+    end
+
+    local srcInv = Inventories[src]
+    local targetInv = Inventories[targetSrc]
+
+    if not srcInv or not targetInv then
+        Debug('Warn', 'Give failed: Missing inventory')
+        ClearBusy(src)
+        ClearBusy(targetSrc)
+        return
+    end
+
+    local itemIndex = nil
+    local item = nil
+
+    for i, it in ipairs(srcInv.items) do
+        if tostring(it.slot) == tostring(slot) and it.name == itemName then
+            itemIndex = i
+            item = it
+            break
+        end
+    end
+
+    if not item then
+        Debug('Warn', 'Give failed: Item not found')
+        ClearBusy(src)
+        ClearBusy(targetSrc)
+        return
+    end
+
+    local data = GetItemData(item.name)
+    if not data then
+        Debug('Warn', 'Give failed: Item data not found')
+        ClearBusy(src)
+        ClearBusy(targetSrc)
+        return
+    end
+
+    local giveCount = math.min(count or item.count, item.count)
+    local addWeight = data.weight * giveCount
+
+    if targetInv.weight + addWeight > targetInv.maxWeight then
+        Debug('Warn', 'Give failed: Target inventory full')
+        Notify(src, 'Target inventory is full', 'error')
+        ClearBusy(src)
+        ClearBusy(targetSrc)
+        return
+    end
+
+    local freeSpot = FindFreeSpot(targetInv, item.name)
+    if not freeSpot then
+        Debug('Warn', 'Give failed: No space in target inventory')
+        Notify(src, 'Target has no space', 'error')
+        ClearBusy(src)
+        ClearBusy(targetSrc)
+        return
+    end
+
+    if item.count > giveCount then
+        item.count = item.count - giveCount
+    else
+        table.remove(srcInv.items, itemIndex)
+    end
+    srcInv.weight = srcInv.weight - (data.weight * giveCount)
+
+    table.insert(targetInv.items, {
+        name = item.name,
+        count = giveCount,
+        x = freeSpot.x,
+        y = freeSpot.y,
+        slot = NextSlotId(),
+        metadata = EnsureItemMetadata(item.name, item.metadata)
+    })
+    targetInv.weight = targetInv.weight + addWeight
+
+    SaveInventory(src)
+    SaveInventory(targetSrc)
+
+    TriggerClientEvent('corex-inventory:client:update', src, srcInv)
+    TriggerClientEvent('corex-inventory:client:update', targetSrc, targetInv)
+
+    local srcPlayer = GetPlayer(src)
+    local tgtPlayer = GetPlayer(targetSrc)
+    local srcName = srcPlayer and srcPlayer.name or (function()
+        local ok, n = pcall(function() return exports['corex-core']:GetCoreObject().Functions.GetPlayerName(src) end)
+        return ok and n or 'Unknown'
+    end)()
+    local targetName = tgtPlayer and tgtPlayer.name or (function()
+        local ok, n = pcall(function() return exports['corex-core']:GetCoreObject().Functions.GetPlayerName(targetSrc) end)
+        return ok and n or 'Unknown'
+    end)()
+
+    Debug('Info', srcName .. ' gave ' .. giveCount .. 'x ' .. itemName .. ' to ' .. targetName)
+
+    Notify(targetSrc, 'Received ' .. giveCount .. 'x ' .. (data.label or itemName), 'success')
+
+    ClearBusy(src)
+    ClearBusy(targetSrc)
+end)
+
+AddEventHandler('corex:server:playerReady', function(src, player)
+    if not player then return end
+
+    CreateThread(function()
+        Wait(1500) -- Wait for corex-core to finish
+        LoadInventory(src)
+        Debug('Info', 'Auto-loaded inventory for ' .. (player.name or 'Unknown'))
+    end)
+end)
+
+AddEventHandler('playerDropped', function(reason)
+    local src = source
+    if Inventories[src] then
+        FlushInventory(src)
+        Debug('Info', 'Saved inventory on disconnect for source ' .. src)
+        Inventories[src] = nil
+    end
+end)
+
+-- Batched persistence loop — writes only dirty inventories, every 30s.
+-- Previously each AddItem/RemoveItem/Move/Drop/Pickup/Give triggered an
+-- oxmysql UPDATE; under active play this produced dozens of writes per
+-- player per minute. Now writes coalesce and are flushed on a cadence.
+CreateThread(function()
+    Wait(5000)
+
+    while true do
+        Wait(30000)
+
+        local flushed = 0
+        for src, inv in pairs(Inventories) do
+            if inv and inv.isDirty then
+                FlushInventory(src)
+                flushed = flushed + 1
+            end
+        end
+
+        if flushed > 0 then
+            Debug('Verbose', 'Flushed ' .. flushed .. ' dirty inventories to DB')
+        end
+    end
+end)
+
+-- Flush on resource stop so we don't lose in-memory changes
+AddEventHandler('onResourceStop', function(resourceName)
+    if GetCurrentResourceName() ~= resourceName then return end
+    for src, inv in pairs(Inventories) do
+        if inv and inv.isDirty then
+            FlushInventory(src)
+        end
+    end
+end)
+
+-- Drop expiration cleanup — skips the pass when no drops exist.
+CreateThread(function()
+    while true do
+        Wait(60000)
+
+        if next(DroppedItems) == nil then
+            goto continue
+        end
+
+        local now = os.time()
+        local expireTime = Config.DropExpireTime or 1800
+
+        for dropId, item in pairs(DroppedItems) do
+            if now - item.droppedAt > expireTime then
+                local expCoords = item.coords or vector3(0,0,0)
+                DroppedItems[dropId] = nil
+                exports['corex-core']:BroadcastNearby(expCoords, 500.0, 'corex-inventory:client:itemPickedUp', dropId)
+                Debug('Verbose', 'Expired dropped item: ' .. item.name)
+            end
+        end
+
+        ::continue::
+    end
+end)
+
+local function UpdateItemMeta(src, itemName, metadata, slotId, syncClient)
+    local inv = Inventories[src]
+    if not inv or type(metadata) ~= 'table' then return false end
+
+    local item = FindInventoryItem(inv, itemName, slotId)
+    if item then
+        item.metadata = EnsureItemMetadata(item.name, item.metadata)
+        for k, v in pairs(metadata) do
+            item.metadata[k] = v
+        end
+
+        SaveInventory(src, syncClient ~= false)
+        if syncClient ~= false then
+            TriggerClientEvent('corex-inventory:client:update', src, inv)
+        end
+        return true
+    end
+
+    return false
+end
+
+local function GetItemMeta(src, itemName, slotId)
+    local inv = Inventories[src]
+    if not inv then return nil end
+
+    local item = FindInventoryItem(inv, itemName, slotId)
+    if item then
+        return EnsureItemMetadata(item.name, item.metadata)
+    end
+
+    return nil
+end
+
+RegisterNetEvent('corex-inventory:server:updateWeaponMeta', function(weaponName, metadata, slotId, syncClient)
+    local src = source
+    UpdateItemMeta(src, weaponName, metadata, slotId, syncClient)
+end)
+
+RegisterNetEvent('corex-inventory:server:updateWeaponAmmo', function(slotId, weaponName, ammo)
+    local src = source
+    local safeAmmo = math.max(0, math.floor(tonumber(ammo) or 0))
+    UpdateItemMeta(src, weaponName, { ammo = safeAmmo }, slotId, false)
+end)
+
+RegisterNetEvent('corex-inventory:server:requestAmmoReload', function(slotId, weaponName)
+    local src = source
+    local inv = Inventories[src]
+
+    if not inv then
+        TriggerClientEvent('corex-inventory:client:ammoReloadResult', src, false, slotId, weaponName, 0, 0, 'Inventory not ready')
+        return
+    end
+
+    local weaponItem = FindInventoryItem(inv, weaponName, slotId)
+    if not weaponItem then
+        TriggerClientEvent('corex-inventory:client:ammoReloadResult', src, false, slotId, weaponName, 0, 0, 'Weapon not found')
+        return
+    end
+
+    local weaponDef, canonicalName = GetWeaponDefinition(weaponItem.name)
+    if not weaponDef or not weaponDef.ammoType then
+        TriggerClientEvent('corex-inventory:client:ammoReloadResult', src, false, slotId, canonicalName or weaponItem.name, 0, 0, 'This weapon cannot be reloaded')
+        return
+    end
+
+    if GetInventoryItemCount(inv, weaponDef.ammoType) < 1 then
+        TriggerClientEvent('corex-inventory:client:ammoReloadResult', src, false, slotId, canonicalName, 0, 0, 'No ammo item available')
+        return
+    end
+
+    weaponItem.metadata = EnsureItemMetadata(weaponItem.name, weaponItem.metadata)
+    local newAmmo = math.max(0, math.floor(tonumber(weaponItem.metadata.ammo) or 0)) + 10
+    weaponItem.metadata.ammo = newAmmo
+
+    if not RemoveItem(src, weaponDef.ammoType, 1) then
+        TriggerClientEvent('corex-inventory:client:ammoReloadResult', src, false, slotId, canonicalName, 0, 0, 'Failed to consume ammo item')
+        return
+    end
+
+    TriggerClientEvent('corex-inventory:client:ammoReloadResult', src, true, slotId, canonicalName, newAmmo, 10, weaponDef.ammoType)
+end)
+
+exports('GetItemsCatalog', function() return Items or {} end)
+exports('GetWeaponsCatalog', function() return Weapons or {} end)
+exports('GetAmmoCatalog', function() return Ammo or {} end)
+exports('GetFullCatalog', GetAllItemsData)
+exports('AddItem', AddItem)
+exports('RemoveItem', RemoveItem)
+exports('GetInventory', function(src) return Inventories[src] end)
+exports('DropItem', DropItem)
+exports('PickupItem', PickupItem)
+exports('UpdateItemMeta', UpdateItemMeta)
+exports('GetItemMeta', GetItemMeta)
+exports('HasItem', function(src, itemName, count)
+    count = count or 1
+    local inv = Inventories[src]
+    if not inv then return false end
+
+    for _, item in ipairs(inv.items) do
+        if item.name == itemName and item.count >= count then
+            return true
+        end
+    end
+    return false
+end)
+exports('GetItemCount', function(src, itemName)
+    local inv = Inventories[src]
+    if not inv then return 0 end
+
+    local total = 0
+    for _, item in ipairs(inv.items) do
+        if item.name == itemName then
+            total = total + item.count
+        end
+    end
+    return total
+end)
+
+-- [SECURITY] NetEvent 'corex-inventory:server:giveitem' removed (was CRIT-01).
+-- Previously any client could trigger it to self-grant any item.
+-- Admins use the restricted server command /giveitem below (requires
+-- ACE permission `command.giveitem`). The client wrapper at
+-- corex-inventory/client/main.lua is also gated behind Config.Debug.
+
+RegisterCommand('giveitem', function(src, args)
+    local item = args[1]
+    local count = tonumber(args[2]) or 1
+
+    if not item then return end
+
+    local ok, err = AddItem(src, item, count)
+    if ok then
+        Debug('Info', 'Added ' .. item)
+    else
+        Debug('Warn', 'Failed: ' .. (err or 'Unknown'))
+    end
+end, true)
+
+RegisterCommand('removeitem', function(src, args)
+    local item = args[1]
+    local count = tonumber(args[2]) or 1
+    if item then RemoveItem(src, item, count) end
+end, true)
+
+RegisterCommand('cleardrops', function()
+    DroppedItems = {}
+    BroadcastDroppedItems()
+    Debug('Info', 'All dropped items cleared')
+end, true)
+
+RegisterNetEvent('corex-inventory:server:purchaseShopItem', function(shopName, itemName, amount)
+    local src = source
+
+    if type(shopName) ~= 'string' or type(itemName) ~= 'string' then return end
+    amount = tonumber(amount) or 1
+    if amount < 1 or amount > 100 then return end
+
+    local player = GetPlayer(src)
+    if not player then
+        Debug('Error', 'Player not found for shop purchase')
+        return
+    end
+
+    if not Shops then
+        Debug('Error', 'Shops table is nil on server')
+        TriggerClientEvent('corex-inventory:client:shopPurchaseResult', src, false, 'Shop system error', 0)
+        return
+    end
+
+    if not Shops[shopName] then
+        Debug('Warn', 'Shop not found: ' .. shopName)
+        TriggerClientEvent('corex-inventory:client:shopPurchaseResult', src, false, 'Shop not found', 0)
+        return
+    end
+
+    local shop = Shops[shopName]
+    if not IsPlayerNearShop(src, shop) then
+        Debug('Warn', ('Shop purchase rejected: player %d too far from %s'):format(src, shopName))
+        TriggerClientEvent('corex-inventory:client:shopPurchaseResult', src, false, 'Too far from shop', player.money and player.money.cash or 0)
+        return
+    end
+
+    local itemConfig = nil
+
+    local lowerTarget = string.lower(itemName)
+    for _, config in ipairs(shop.items) do
+        if string.lower(config.name) == lowerTarget then
+            itemConfig = config
+            break
+        end
+    end
+
+    if not itemConfig then
+        Debug('Warn', 'Item not found in shop: ' .. itemName)
+        TriggerClientEvent('corex-inventory:client:shopPurchaseResult', src, false, 'Item not available', 0)
+        return
+    end
+
+    local totalPrice = itemConfig.price * amount
+    local currency = itemConfig.currency or 'cash'
+
+    local playerMoney = player.money and player.money[currency] or 0
+
+    if playerMoney < totalPrice then
+        TriggerClientEvent('corex-inventory:client:shopPurchaseResult', src, false, 'Not enough money! You have $' .. playerMoney .. ', need $' .. totalPrice, playerMoney)
+        return
+    end
+
+    local itemAmount = (itemConfig.amount or 1) * amount
+
+    local addSuccess, err = AddItem(src, itemName, itemAmount)
+    if not addSuccess then
+        TriggerClientEvent('corex-inventory:client:shopPurchaseResult', src, false, 'Inventory full or error: ' .. (err or 'Unknown'), playerMoney)
+        return
+    end
+
+    local removeOk, removeSuccess = pcall(function()
+        return exports['corex-core']:RemoveMoney(src, currency, totalPrice)
+    end)
+
+    if not removeOk or not removeSuccess then
+        RemoveItem(src, itemName, itemAmount)
+        TriggerClientEvent('corex-inventory:client:shopPurchaseResult', src, false, 'Transaction failed - could not remove money', playerMoney)
+        return
+    end
+
+    local updatedPlayer = GetPlayer(src)
+    local newMoney = updatedPlayer and updatedPlayer.money and updatedPlayer.money[currency] or 0
+
+    local itemDef = Items[itemName] or Weapons[itemName] or Weapons[string.upper(itemName)] or Ammo[itemName]
+    local itemLabel = itemDef and itemDef.label or itemName
+
+    Debug('Info', 'Player ' .. src .. ' purchased ' .. itemAmount .. 'x ' .. itemLabel .. ' for $' .. totalPrice)
+
+    TriggerClientEvent('corex-inventory:client:shopPurchaseResult', src, true, 'Purchased ' .. itemAmount .. 'x ' .. itemLabel .. ' for $' .. totalPrice, newMoney)
+end)
+
+RegisterNetEvent('corex-inventory:server:purchaseVehicleShopItem', function(shopName, model)
+    local src = source
+    if type(shopName) ~= 'string' or type(model) ~= 'string' then return end
+
+    if PendingVehiclePurchases[src] then
+        local player = GetPlayer(src)
+        local cash = player and player.money and player.money.cash or 0
+        TriggerClientEvent('corex-inventory:client:vehiclePurchaseResult', src, false, 'Wait for the current bike to finish deploying.', cash)
+        return
+    end
+
+    local player = GetPlayer(src)
+    if not player then
+        TriggerClientEvent('corex-inventory:client:vehiclePurchaseResult', src, false, 'Player not found.', 0)
+        return
+    end
+
+    local shop = Shops and Shops[shopName]
+    if not shop or shop.type ~= 'vehicle' then
+        TriggerClientEvent('corex-inventory:client:vehiclePurchaseResult', src, false, 'Vehicle shop not found.', player.money and player.money.cash or 0)
+        return
+    end
+
+    if not IsPlayerNearShop(src, shop) then
+        Debug('Warn', ('Vehicle purchase rejected: player %d too far from %s'):format(src, shopName))
+        TriggerClientEvent('corex-inventory:client:vehiclePurchaseResult', src, false, 'Too far from shop.', player.money and player.money.cash or 0)
+        return
+    end
+
+    local catalogId = shop.catalogId or 'bike_rental'
+    local catalog = GetVehicleCatalog(catalogId)
+    local vehicleDef = GetVehicleDefinition(catalogId, model)
+    if not catalog or not vehicleDef then
+        TriggerClientEvent('corex-inventory:client:vehiclePurchaseResult', src, false, 'Vehicle is not available.', player.money and player.money.cash or 0)
+        return
+    end
+
+    local currency = catalog.currency or 'cash'
+    local price = tonumber(vehicleDef.price) or 0
+    local balance = player.money and player.money[currency] or 0
+    if balance < price then
+        TriggerClientEvent('corex-inventory:client:vehiclePurchaseResult', src, false, 'Not enough money.', balance)
+        return
+    end
+
+    local removed = false
+    local removeOk = pcall(function()
+        removed = exports['corex-core']:RemoveMoney(src, currency, price)
+    end)
+
+    if not removeOk or not removed then
+        TriggerClientEvent('corex-inventory:client:vehiclePurchaseResult', src, false, 'Transaction failed.', balance)
+        return
+    end
+
+    PendingVehiclePurchases[src] = {
+        shopName = shopName,
+        model = NormalizeVehicleKey(model),
+        label = vehicleDef.label or model,
+        price = price,
+        currency = currency,
+        expiresAt = GetGameTimer() + 15000
+    }
+
+    TriggerClientEvent('corex-inventory:client:spawnPurchasedVehicle', src, {
+        shopName = shopName,
+        catalogId = catalogId,
+        model = vehicleDef.model or model,
+        plate = GenerateRentalPlate(),
+        spawnPoint = shop.spawnPoint or (shop.npc and shop.npc.coords)
+    })
+end)
+
+RegisterNetEvent('corex-inventory:server:vehicleSpawnSucceeded', function(shopName, model)
+    local src = source
+    local pending = PendingVehiclePurchases[src]
+    if not pending then return end
+
+    if pending.shopName ~= shopName or pending.model ~= NormalizeVehicleKey(model) then
+        return
+    end
+
+    PendingVehiclePurchases[src] = nil
+
+    local player = GetPlayer(src)
+    local newMoney = player and player.money and player.money[pending.currency] or 0
+    TriggerClientEvent('corex-inventory:client:vehiclePurchaseResult', src, true, pending.label .. ' deployed for $' .. pending.price, newMoney)
+end)
+
+RegisterNetEvent('corex-inventory:server:vehicleSpawnFailed', function(shopName, model, reason)
+    local src = source
+    local pending = PendingVehiclePurchases[src]
+    if not pending then return end
+
+    if pending.shopName ~= shopName or pending.model ~= NormalizeVehicleKey(model) then
+        return
+    end
+
+    PendingVehiclePurchases[src] = nil
+
+    local addOk, addSuccess = pcall(function()
+        return exports['corex-core']:AddMoney(src, pending.currency, pending.price)
+    end)
+
+    local player = GetPlayer(src)
+    local newMoney = player and player.money and player.money[pending.currency] or 0
+    local refundMessage = 'Vehicle spawn failed, money refunded.'
+    if Config and Config.Debug then
+        Debug('Warn', ('Vehicle spawn failed for %s (%s): %s'):format(src, pending.model, tostring(reason)))
+    end
+
+    if not addOk or not addSuccess then
+        refundMessage = 'Vehicle spawn failed and refund could not be completed.'
+    end
+
+    TriggerClientEvent('corex-inventory:client:vehiclePurchaseResult', src, false, refundMessage, newMoney)
+end)
+
+CreateThread(function()
+    while true do
+        Wait(5000)
+        local now = GetGameTimer()
+        for src, pending in pairs(PendingVehiclePurchases) do
+            if now >= pending.expiresAt then
+                local refundSuccess = false
+                local addOk = pcall(function()
+                    refundSuccess = exports['corex-core']:AddMoney(src, pending.currency, pending.price)
+                end)
+                PendingVehiclePurchases[src] = nil
+
+                local player = GetPlayer(src)
+                local newMoney = player and player.money and player.money[pending.currency] or 0
+                TriggerClientEvent('corex-inventory:client:vehiclePurchaseResult', src, false, (addOk and refundSuccess) and 'Vehicle spawn timed out, money refunded.' or 'Vehicle spawn timed out.', newMoney)
+            end
+        end
+    end
+end)
+
+exports('GetItemData', function(itemName)
+    if type(itemName) ~= 'string' then return nil end
+    local lo, up = string.lower(itemName), string.upper(itemName)
+    return Items[itemName] or Items[lo] or Items[up]
+        or Weapons[itemName] or Weapons[lo] or Weapons[up]
+        or Ammo[itemName] or Ammo[lo] or Ammo[up]
+end)
+
+exports('GetAllItemsData', function()
+    local all = {}
+    for k, v in pairs(Items or {}) do all[k] = v end
+    for k, v in pairs(Weapons or {}) do all[k] = v end
+    for k, v in pairs(Ammo or {}) do all[k] = v end
+    return all
+end)
+
+exports('GetRarity', function()
+    return Rarity
+end)

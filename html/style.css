@@ -1,0 +1,1373 @@
+:root {
+    --bg-main: #0d1117;
+    --bg-panel: #0f1419;
+    --bg-slot: #151b22;
+    --bg-slot-inner: #1a2129;
+    --border-slot: #243040;
+    --border-slot-hover: #4ade80;
+    --accent-green: #22c55e;
+    --accent-glow: rgba(34, 197, 94, 0.2);
+    --accent-red: #ef4444;
+    --text-main: #ffffff;
+    --text-muted: #9ca3af;
+    --slot-size: 64px;
+    --gap-size: 6px;
+    --grid-cols: 5;
+    --grid-rows: 8;
+
+    /* ألوان الندرة */
+    --rarity-common: #8b949e;
+    --rarity-uncommon: #3fb950;
+    --rarity-rare: #58a6ff;
+    --rarity-epic: #a371f7;
+    --rarity-legendary: #d29922;
+    --rarity-mythic: #f85149;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+body {
+    width: 100vw;
+    height: 100vh;
+    background-color: transparent;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-family: 'Rajdhani', sans-serif;
+    color: var(--text-main);
+    overflow: hidden;
+}
+
+.hidden {
+    display: none !important;
+}
+
+.ui-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+}
+
+.inventory-row {
+    display: flex;
+    flex-direction: row;
+    gap: 16px;
+}
+
+.inventory-panel {
+    background: var(--bg-panel);
+    border: 1px solid var(--border-slot);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.panel-header {
+    display: flex;
+    align-items: center;
+    padding: 10px 14px;
+    gap: 10px;
+    background: linear-gradient(180deg, rgba(20, 30, 40, 0.9) 0%, var(--bg-panel) 100%);
+    border-bottom: 1px solid rgba(36, 48, 64, 0.5);
+}
+
+.hex-icon {
+    width: 32px;
+    height: 32px;
+    flex-shrink: 0;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.hex-svg {
+    width: 100%;
+    height: 100%;
+    position: absolute;
+    top: 0;
+    left: 0;
+}
+
+.hex-inner-icon {
+    position: relative;
+    z-index: 1;
+    font-size: 12px;
+}
+
+.player-panel .hex-icon {
+    color: var(--accent-green);
+}
+
+.drop-panel .hex-icon {
+    color: var(--accent-red);
+}
+
+.panel-title {
+    font-size: 14px;
+    font-weight: 500;
+    letter-spacing: 0.5px;
+}
+
+.header-spacer {
+    flex: 1;
+}
+
+.weight-bar {
+    display: flex;
+    gap: 2px;
+    margin-right: 8px;
+}
+
+.weight-segment {
+    width: 6px;
+    height: 12px;
+    background: #1e2a36;
+    border-radius: 1px;
+    transition: all 0.2s;
+}
+
+.weight-segment.filled {
+    background: var(--accent-green);
+    box-shadow: 0 0 4px var(--accent-glow);
+}
+
+.weight-segment.warning {
+    background: #facc15;
+    box-shadow: 0 0 4px rgba(250, 204, 21, 0.5);
+}
+
+.weight-segment.danger {
+    background: #ef4444;
+    box-shadow: 0 0 4px rgba(239, 68, 68, 0.5);
+}
+
+.weight-text {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--text-muted);
+    font-weight: 500;
+}
+
+.weight-text i {
+    font-size: 10px;
+    color: var(--accent-green);
+}
+
+.drop-hint {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--accent-red);
+    font-size: 11px;
+    font-weight: 500;
+    opacity: 0.9;
+}
+
+.shop-money {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    background: #141a22;
+    border: 1px solid #2a3a4d;
+    border-radius: 4px;
+    color: #ffffff;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    font-variant-numeric: tabular-nums;
+    box-shadow: none;
+}
+
+.shop-money i {
+    font-size: 11px;
+    color: #f59e0b;
+    filter: none;
+}
+
+.shop-money #player-money {
+    color: #ffffff;
+    text-shadow: none;
+}
+
+.grid-container {
+    padding: 10px;
+}
+
+.inventory-grid {
+    display: grid;
+    grid-template-columns: repeat(var(--grid-cols), var(--slot-size));
+    gap: var(--gap-size);
+    position: relative;
+}
+
+.slot {
+    width: var(--slot-size);
+    height: var(--slot-size);
+    background: var(--bg-slot);
+    border: 1px solid var(--border-slot);
+    border-radius: 4px;
+    position: relative;
+    transition: all 0.15s ease;
+}
+
+.slot::before {
+    content: '';
+    position: absolute;
+    inset: 3px;
+    background: var(--bg-slot-inner);
+    border-radius: 2px;
+    pointer-events: none;
+}
+
+.slot:hover {
+    border-color: var(--border-slot-hover);
+}
+
+.slot.drop-target {
+    border-color: var(--accent-green);
+    box-shadow: 0 0 10px var(--accent-glow);
+}
+
+.drop-panel .slot:hover {
+    border-color: var(--accent-red);
+}
+
+/* ========== ITEM BASE ========== */
+.item {
+    position: absolute;
+    background: var(--bg-slot);
+    border: 1px solid var(--border-slot);
+    border-radius: 4px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    cursor: pointer;
+    overflow: hidden;
+    z-index: 5;
+    transition: all 0.3s ease;
+    contain: layout paint;
+}
+
+/* ========== تطبيق ألوان الندرة ========== */
+.item.rarity-common {
+    --rarity-color: var(--rarity-common);
+}
+
+.item.rarity-uncommon {
+    --rarity-color: var(--rarity-uncommon);
+}
+
+.item.rarity-rare {
+    --rarity-color: var(--rarity-rare);
+}
+
+.item.rarity-epic {
+    --rarity-color: var(--rarity-epic);
+}
+
+.item.rarity-legendary {
+    --rarity-color: var(--rarity-legendary);
+    border-color: rgba(210, 153, 34, 0.55);
+    box-shadow: 0 0 14px rgba(210, 153, 34, 0.25);
+}
+
+.item.rarity-mythic {
+    --rarity-color: var(--rarity-mythic);
+    border-color: rgba(248, 81, 73, 0.55);
+    box-shadow: 0 0 14px rgba(248, 81, 73, 0.25);
+}
+
+/* ========== الخط المضيء في الأسفل ========== */
+.item::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    height: 3px;
+    background: var(--rarity-color);
+    box-shadow: 0 -2px 10px var(--rarity-color);
+    opacity: 0.8;
+    transition: all 0.3s ease;
+    z-index: 10;
+}
+
+/* ========== التوهج الداخلي المحيطي ========== */
+.item::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(circle at 50% 120%, var(--rarity-color), transparent 70%);
+    opacity: 0.15;
+    z-index: 0;
+    transition: opacity 0.3s ease;
+}
+
+/* ========== تأثير الهوفر ========== */
+.item:hover {
+    border-color: var(--rarity-color) !important;
+    box-shadow:
+        0 0 20px rgba(0, 0, 0, 0.5),
+        inset 0 0 20px rgba(255, 255, 255, 0.05),
+        0 0 15px var(--rarity-color);
+    transform: translateY(-3px);
+    z-index: 50;
+}
+
+.item:hover::before {
+    opacity: 0.3;
+}
+
+/* legendaryPulse keyframes removed — was infinite alternate on every legendary item,
+   expensive when inventory has multiple. Replaced with static glow border. */
+
+/* Hide rarity text */
+.item-rarity {
+    display: none;
+}
+
+.item-qty {
+    position: absolute;
+    top: 5px;
+    left: 5px;
+    background: rgba(0, 0, 0, 0.7);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 3px;
+    min-width: 18px;
+    text-align: center;
+    z-index: 5;
+}
+
+.item-weight {
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    color: var(--text-muted);
+    font-size: 9px;
+    font-weight: 500;
+    z-index: 5;
+}
+
+.item-price {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    background: linear-gradient(135deg, rgba(16, 185, 129, 1) 0%, rgba(5, 150, 105, 1) 100%);
+    border: 2px solid rgba(167, 243, 208, 1);
+    color: #ffffff;
+    font-size: 10px;
+    font-weight: 900;
+    padding: 3px 6px;
+    border-radius: 4px;
+    z-index: 6;
+    box-shadow: 0 3px 8px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+    white-space: nowrap;
+    line-height: 1.1;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9), 0 0 8px rgba(0, 0, 0, 0.5);
+    letter-spacing: 0.5px;
+}
+
+/* ========== SHOP ITEM LAYOUT ========== */
+.item.shop-item {
+    background: #131924;
+    border: 1px solid #22303f;
+    border-radius: 6px;
+    padding: 0;
+    display: block;
+    overflow: hidden;
+    animation: none !important;
+    box-shadow: none;
+}
+
+.item.shop-item::before {
+    content: none;
+}
+
+.item.shop-item::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 4px;
+    background: var(--rarity-color);
+    box-shadow: none;
+    opacity: 1;
+    z-index: 11;
+    transition: none;
+}
+
+.item.shop-item:hover {
+    border-color: var(--rarity-color) !important;
+    box-shadow: none;
+    transform: none;
+}
+
+.item.shop-item:hover img {
+    transform: none;
+}
+
+.item.shop-item .item-rarity {
+    display: none;
+}
+
+.item.shop-item .item-weight {
+    display: none;
+}
+
+.item.shop-item .item-qty {
+    display: none;
+}
+
+.item.shop-item .item-price {
+    top: 6px;
+    right: 6px;
+    background: #10b981;
+    border: 1px solid #0b8f66;
+    color: #ffffff;
+    font-size: 10px;
+    font-weight: 800;
+    padding: 2px 8px;
+    border-radius: 3px;
+    z-index: 8;
+    box-shadow: none;
+    text-shadow: none;
+    letter-spacing: 0.3px;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.3;
+}
+
+.item.shop-item img {
+    position: absolute;
+    top: 38px;
+    left: 6px;
+    right: 6px;
+    bottom: 24px;
+    width: calc(100% - 12px);
+    height: calc(100% - 62px);
+    margin: 0;
+    filter: none;
+    transition: none;
+    object-fit: contain;
+    object-position: center center;
+}
+
+.item.shop-item .item-name {
+    position: absolute;
+    bottom: 4px;
+    left: 0;
+    right: 0;
+    padding: 4px 6px 5px;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    color: #f1f5f9;
+    background: #0d1219;
+    border-top: 1px solid #22303f;
+    border-radius: 0;
+    text-shadow: none;
+    z-index: 9;
+    text-align: center;
+}
+
+/* 1x1 compact (ammo, consumables) — tight layout so image stays legible */
+.item.shop-item-compact .item-qty {
+    display: block;
+    top: 3px;
+    left: 3px;
+    padding: 1px 5px;
+    font-size: 9px;
+    border-radius: 2px;
+    background: #0d1219;
+    border: 1px solid #22303f;
+    color: #e5e7eb;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    z-index: 8;
+    box-shadow: none;
+    text-shadow: none;
+    font-variant-numeric: tabular-nums;
+}
+
+.item.shop-item-compact .item-price {
+    top: 3px;
+    right: 3px;
+    padding: 1px 5px;
+    font-size: 9px;
+    border-radius: 2px;
+}
+
+.item.shop-item-compact img {
+    top: 24px;
+    left: 2px;
+    right: 2px;
+    bottom: 14px;
+    width: calc(100% - 4px);
+    height: calc(100% - 38px);
+}
+
+.item.shop-item-compact .item-name {
+    bottom: 4px;
+    padding: 2px 3px 3px;
+    font-size: 8px;
+    letter-spacing: 0.3px;
+}
+
+/* 2x2 and larger weapons — roomier image and bolder name */
+.item.shop-item-large img {
+    top: 42px;
+    left: 8px;
+    right: 8px;
+    bottom: 30px;
+    width: calc(100% - 16px);
+    height: calc(100% - 72px);
+}
+
+.item.shop-item-large .item-name {
+    bottom: 4px;
+    padding: 6px 8px 7px;
+    font-size: 10px;
+    letter-spacing: 0.7px;
+}
+
+.item.shop-item-large .item-price {
+    top: 8px;
+    right: 8px;
+    font-size: 11px;
+    padding: 3px 9px;
+}
+
+.item.shop-item-large .item-qty {
+    top: 8px;
+    left: 8px;
+    font-size: 11px;
+    padding: 3px 8px;
+}
+
+.item.shop-item.item-type-weapon img {
+    transform: scale(1.15);
+}
+
+.item.shop-item.item-type-ammo img {
+    transform: scale(1.28);
+}
+
+.item.shop-item.item-category-pistol img {
+    transform: scale(1.22);
+}
+
+.item.shop-item.item-category-smg img {
+    transform: scale(1.18);
+}
+
+.item.shop-item.shop-item-compact.item-type-ammo img {
+    top: 10px;
+    bottom: 12px;
+    transform: scale(1.45);
+}
+
+.item.shop-item.shop-item-large.item-type-weapon img {
+    transform: scale(1.1);
+}
+
+.item.shop-item.shop-item-compact .item-name {
+    font-size: 7px;
+    line-height: 1.05;
+}
+
+.item img {
+    width: 60%;
+    height: 55%;
+    object-fit: contain;
+    /* Lighter drop-shadow — applied per item, so keeping radius small matters. */
+    filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.55));
+    transition: transform 0.2s ease;
+    pointer-events: none;
+    z-index: 2;
+}
+
+.item:hover img {
+    transform: scale(1.08);
+}
+
+.item-name {
+    position: absolute;
+    bottom: 8px;
+    left: 0;
+    right: 0;
+    text-align: center;
+    font-size: 9px;
+    font-weight: 700;
+    color: #fff;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.9), 0 0 8px rgba(0, 0, 0, 0.7);
+    z-index: 3;
+}
+
+.item.dragging {
+    opacity: 0.5;
+    pointer-events: none;
+    z-index: 100;
+}
+
+.drag-preview {
+    position: fixed;
+    border: 2px solid var(--accent-green);
+    border-radius: 4px;
+    pointer-events: none;
+    z-index: 999;
+    transition: all 0.1s ease;
+}
+
+.drag-preview.valid {
+    background: rgba(34, 197, 94, 0.25);
+    border-color: var(--accent-green);
+    box-shadow: 0 0 15px rgba(34, 197, 94, 0.4);
+}
+
+.drag-preview.invalid {
+    background: rgba(239, 68, 68, 0.25);
+    border-color: var(--accent-red);
+    box-shadow: 0 0 15px rgba(239, 68, 68, 0.4);
+}
+
+.drag-preview.drop-zone {
+    background: rgba(251, 146, 60, 0.25);
+    border-color: #fb923c;
+    box-shadow: 0 0 15px rgba(251, 146, 60, 0.4);
+}
+
+/* Context Menu — backdrop-filter removed; near-opaque bg gives same look w/o GPU cost */
+#context-menu {
+    position: fixed;
+    background: rgba(15, 20, 25, 0.98);
+    border: 1px solid rgba(60, 75, 90, 0.6);
+    min-width: 135px;
+    z-index: 9999;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+    border-radius: 6px;
+    overflow: visible;
+}
+
+#context-menu::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(34, 197, 94, 0.5), transparent);
+}
+
+.menu-option {
+    padding: 8px 12px;
+    color: rgba(255, 255, 255, 0.8);
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    transition: all 0.15s ease;
+    position: relative;
+}
+
+.menu-option:first-child {
+    border-radius: 5px 5px 0 0;
+}
+
+.menu-option:last-of-type:not(.has-submenu) {
+    border-radius: 0 0 5px 5px;
+}
+
+.menu-option:hover {
+    background: rgba(255, 255, 255, 0.05);
+    color: #fff;
+}
+
+.menu-option:hover i:first-child {
+    color: var(--accent-green);
+    transform: none;
+}
+
+.menu-option i:first-child {
+    width: 14px;
+    text-align: center;
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.6);
+    transition: all 0.2s ease;
+}
+
+.menu-option span {
+    flex: 1;
+}
+
+.menu-option .submenu-arrow {
+    font-size: 10px;
+    color: rgba(255, 255, 255, 0.4);
+    transition: all 0.2s ease;
+}
+
+.menu-option.has-submenu:hover .submenu-arrow {
+    color: var(--accent-green);
+    transform: translateX(3px);
+}
+
+/* Players Submenu — backdrop-filter removed (same reasoning as #context-menu) */
+#players-submenu {
+    position: absolute;
+    left: calc(100% + 4px);
+    top: -1px;
+    background: rgba(15, 20, 25, 0.98);
+    border: 1px solid rgba(60, 75, 90, 0.6);
+    min-width: 135px;
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+    overflow: hidden;
+}
+
+#players-submenu::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(60, 75, 90, 0.5), transparent);
+}
+
+.submenu-header {
+    padding: 10px 14px;
+    font-size: 11px;
+    font-weight: 600;
+    color: rgba(180, 190, 200, 0.9);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    border-bottom: 1px solid rgba(60, 75, 90, 0.5);
+    background: rgba(60, 75, 90, 0.1);
+}
+
+#players-list {
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.player-option {
+    padding: 12px 14px;
+    color: rgba(255, 255, 255, 0.8);
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    transition: all 0.2s ease;
+    border-bottom: 1px solid rgba(60, 75, 90, 0.3);
+}
+
+.player-option:last-child {
+    border-bottom: none;
+}
+
+.player-option:hover {
+    background: rgba(34, 197, 94, 0.15);
+    color: #fff;
+}
+
+.player-option i {
+    color: rgba(255, 255, 255, 0.5);
+    font-size: 12px;
+}
+
+.player-option:hover i {
+    color: var(--accent-green);
+}
+
+.player-info {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1;
+}
+
+.player-name {
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.9);
+}
+
+.player-distance {
+    color: rgba(255, 255, 255, 0.5);
+    font-size: 10px;
+    font-weight: 600;
+    background: rgba(60, 75, 90, 0.4);
+    padding: 4px 8px;
+    border-radius: 4px;
+    min-width: 32px;
+    text-align: center;
+}
+
+.player-option .player-id {
+    color: rgba(255, 255, 255, 0.4);
+    font-size: 10px;
+    margin-left: auto;
+}
+
+.no-players {
+    padding: 14px;
+    color: rgba(255, 255, 255, 0.4);
+    font-size: 11px;
+    text-align: center;
+    font-style: italic;
+}
+
+/* ========== QUICKSLOTS ========== */
+.quickslot-number {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 36px;
+    font-weight: 900;
+    color: rgba(255, 255, 255, 0.4);
+    z-index: 100;
+    pointer-events: none;
+    text-shadow: 0 2px 6px rgba(0, 0, 0, 0.8);
+}
+
+
+/* ========== HOTBAR (Professional Fortnite Style) ========== */
+.hotbar-container {
+    background: transparent !important;
+    position: fixed;
+    bottom: 40px;
+    right: 40px;
+    left: auto;
+    transform: none;
+    display: flex;
+    gap: 12px;
+    z-index: 1000;
+}
+
+.hotbar-slot-wrapper {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    background: transparent !important;
+}
+
+.hotbar-slot {
+    width: 70px;
+    height: 70px;
+    background: transparent;
+    border: 2px solid rgba(80, 90, 100, 0.3);
+    position: relative;
+    transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    border-radius: 6px;
+}
+
+/* Initial Hover State */
+.hotbar-slot:hover {
+    background: rgba(40, 40, 45, 0.6);
+    border-color: rgba(255, 255, 255, 0.3);
+    transform: translateY(-2px);
+}
+
+/* Rarity Backgrounds - Professional, Vibrant, Clean */
+.hotbar-slot[data-rarity="common"],
+.hotbar-slot.has-item:not([data-rarity]) {
+    background: radial-gradient(circle at center, rgba(160, 170, 180, 0.2) 0%, rgba(35, 45, 55, 0.2) 100%);
+    border: 2px solid rgba(160, 170, 180, 0.6);
+    box-shadow: 0 0 12px rgba(160, 170, 180, 0.15);
+}
+
+.hotbar-slot[data-rarity="uncommon"] {
+    background: radial-gradient(circle at center, rgba(46, 204, 113, 0.2) 0%, rgba(10, 40, 20, 0.15) 100%);
+    border: 2px solid #2ecc71;
+    box-shadow: 0 0 15px rgba(46, 204, 113, 0.2);
+}
+
+.hotbar-slot[data-rarity="rare"] {
+    background: radial-gradient(circle at center, rgba(41, 182, 246, 0.25) 0%, rgba(5, 30, 60, 0.15) 100%);
+    border: 2px solid #29b6f6;
+    box-shadow: 0 0 15px rgba(41, 182, 246, 0.25);
+}
+
+.hotbar-slot[data-rarity="epic"] {
+    background: radial-gradient(circle at center, rgba(155, 89, 182, 0.25) 0%, rgba(40, 10, 60, 0.15) 100%);
+    border: 2px solid #9b59b6;
+    box-shadow: 0 0 15px rgba(155, 89, 182, 0.3);
+}
+
+.hotbar-slot[data-rarity="legendary"] {
+    background: radial-gradient(circle at center, rgba(241, 196, 15, 0.3) 0%, rgba(60, 50, 5, 0.2) 100%);
+    border: 2px solid #f1c40f;
+    box-shadow: 0 0 18px rgba(241, 196, 15, 0.4), inset 0 0 16px rgba(241, 196, 15, 0.1);
+}
+
+.hotbar-slot[data-rarity="mythic"] {
+    background: radial-gradient(circle at center, rgba(248, 81, 73, 0.3) 0%, rgba(60, 10, 10, 0.2) 100%);
+    border: 2px solid #f85149;
+    box-shadow: 0 0 18px rgba(248, 81, 73, 0.4), inset 0 0 16px rgba(248, 81, 73, 0.1);
+}
+
+/* pulseGold / pulseMythic removed — hotbar is always-on HUD, infinite box-shadow
+   animation was forcing paint every frame on rare-slot players. */
+
+/* Active State - White Selection */
+.hotbar-slot.active {
+    border-color: #ffffff !important;
+    box-shadow: 0 0 20px rgba(255, 255, 255, 0.5);
+    background: rgba(255, 255, 255, 0.1);
+}
+
+/* Item Image */
+.hotbar-item-image {
+    width: 75%;
+    height: 75%;
+    object-fit: contain;
+    filter: drop-shadow(0 5px 8px rgba(0, 0, 0, 0.8));
+    transform: rotate(-3deg);
+    transition: transform 0.2s ease;
+}
+
+.hotbar-slot:hover .hotbar-item-image {
+    transform: rotate(0deg) scale(1.1);
+}
+
+/* Count */
+.hotbar-item-count {
+    position: absolute;
+    bottom: 3px;
+    right: 5px;
+    color: #fff;
+    font-size: 14px;
+    font-weight: 800;
+    text-shadow: 1px 1px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000;
+    /* Sharp outline */
+    z-index: 20;
+    font-family: 'Rajdhani', sans-serif;
+    letter-spacing: 0.5px;
+}
+
+/* Key Indicator Box - Below the slot */
+.hotbar-key {
+    width: 26px;
+    height: 26px;
+    background: rgba(30, 30, 35, 0.9);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 4px;
+    color: #eee;
+    font-size: 13px;
+    font-weight: 700;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.5);
+    font-family: 'Rajdhani', sans-serif;
+    transition: all 0.2s;
+}
+
+.hotbar-slot-wrapper:hover .hotbar-key {
+    border-color: #fff;
+    color: #fff;
+    transform: translateY(-2px);
+}
+
+/* ========== LOOT CONTAINER REVEAL ========== */
+
+.loot-shimmer {
+    position: absolute;
+    inset: 0;
+    background: var(--bg-slot, #151b22);
+    border: 1px solid var(--border-slot, #243040);
+    z-index: 20;
+    overflow: hidden;
+    border-radius: 4px;
+    pointer-events: none;
+}
+
+.loot-shimmer::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+        110deg,
+        transparent 25%,
+        rgba(34, 197, 94, 0.10) 40%,
+        rgba(34, 197, 94, 0.20) 50%,
+        rgba(34, 197, 94, 0.10) 60%,
+        transparent 75%
+    );
+}
+
+/* lootShimmer keyframes removed — the reveal-dissolve animation below is enough
+   to signal state; the infinite looping shimmer was re-painting every frame
+   for every locked slot in the container. */
+
+.loot-shimmer.revealing {
+    animation: shimmerDissolve 0.6s ease-out forwards;
+    border-color: rgba(34, 197, 94, 0.5);
+}
+
+@keyframes shimmerDissolve {
+    0% { opacity: 1; background: rgba(34, 197, 94, 0.15); }
+    100% { opacity: 0; }
+}
+
+.item.loot-revealed {
+    animation: itemRevealPop 0.35s ease-out;
+}
+
+@keyframes itemRevealPop {
+    0% { transform: scale(0.85); }
+    50% { transform: scale(1.06); }
+    100% { transform: scale(1); }
+}
+
+.loot-shimmer {
+    background:
+        radial-gradient(circle at 50% 18%, rgba(34, 197, 94, 0.12), transparent 34%),
+        var(--bg-slot, #151b22);
+}
+
+.loot-shimmer::before {
+    top: -35%;
+    bottom: -35%;
+    left: -70%;
+    right: auto;
+    width: 68%;
+    background: linear-gradient(
+        100deg,
+        transparent 0%,
+        rgba(34, 197, 94, 0.04) 26%,
+        rgba(74, 222, 128, 0.24) 48%,
+        rgba(34, 197, 94, 0.04) 70%,
+        transparent 100%
+    );
+    transform: translateX(0) skewX(-18deg);
+    animation: lootScan 1.15s cubic-bezier(0.25, 1, 0.5, 1) infinite;
+}
+
+
+
+.item.loot-pending > :not(.loot-shimmer) {
+    opacity: 0;
+    transform: scale(0.94);
+}
+
+.loot-shimmer.revealing {
+    animation: shimmerDissolve 0.52s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+    border-color: rgba(34, 197, 94, 0.5);
+}
+
+.loot-shimmer.revealing::before {
+    animation: lootScanFinal 0.52s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes lootScan {
+    0% { transform: translateX(0) skewX(-18deg); opacity: 0; }
+    16% { opacity: 1; }
+    100% { transform: translateX(250%) skewX(-18deg); opacity: 0.15; }
+}
+
+@keyframes lootScanFinal {
+    0% { transform: translateX(0) skewX(-18deg); opacity: 0.65; }
+    100% { transform: translateX(270%) skewX(-18deg); opacity: 0; }
+}
+
+@keyframes shimmerDissolve {
+    0% { opacity: 1; filter: brightness(1); }
+    45% { opacity: 1; filter: brightness(1.25); background-color: rgba(34, 197, 94, 0.14); }
+    100% { opacity: 0; filter: brightness(1); }
+}
+
+.item.loot-revealed {
+    animation: itemRevealPop 0.38s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.item.loot-revealed > :not(.loot-shimmer) {
+    opacity: 1;
+    transform: scale(1);
+}
+
+@keyframes itemRevealPop {
+    0% { opacity: 0; transform: scale(0.88) translateY(6px); }
+    65% { opacity: 1; transform: scale(1.035) translateY(0); }
+    100% { opacity: 1; transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .loot-shimmer::before,
+    .loot-shimmer.revealing,
+    .loot-shimmer.revealing::before,
+    .item.loot-revealed {
+        animation: none !important;
+    }
+}
+
+.container-header-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    background: rgba(34, 197, 94, 0.12);
+    border: 1px solid rgba(34, 197, 94, 0.25);
+    border-radius: 4px;
+    color: #22c55e;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+
+/* ========== SHOP LAYOUT ========== */
+.inventory-grid.is-shop {
+    display: grid !important;
+    grid-template-columns: repeat(2, 1fr) !important;
+    grid-auto-rows: min-content;
+    gap: 12px !important;
+    max-height: calc( (var(--grid-rows) * var(--slot-size)) + ((var(--grid-rows) - 1) * var(--gap-size)) );
+    overflow-y: auto;
+    overflow-x: hidden;
+    align-content: start;
+    padding-right: 6px;
+    padding-bottom: 20px;
+}
+
+.inventory-grid.is-shop::-webkit-scrollbar {
+    width: 6px;
+}
+.inventory-grid.is-shop::-webkit-scrollbar-track {
+    background: rgba(15, 20, 25, 0.3);
+    border-radius: 3px;
+}
+.inventory-grid.is-shop::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.15);
+    border-radius: 3px;
+}
+.inventory-grid.is-shop::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.25);
+}
+
+.inventory-grid.is-shop .slot {
+    display: none;
+}
+
+/* Professional Shop Card */
+.shop-card {
+    background: rgba(18, 22, 28, 0.95);
+    border: 1px solid rgba(40, 50, 65, 0.4);
+    border-radius: 6px;
+    display: flex;
+    flex-direction: column;
+    padding: 10px;
+    cursor: default;
+    transition: all 0.2s cubic-bezier(0.25, 0.8, 0.25, 1);
+    position: relative;
+    user-select: none;
+}
+
+.shop-card:hover {
+    background: rgba(24, 30, 38, 1);
+    border-color: rgba(60, 80, 105, 0.8);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.shop-card.dragging {
+    opacity: 0.95;
+    background: rgba(24, 30, 38, 0.95);
+    border-color: var(--accent-green);
+    transform: scale(1.03);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+    pointer-events: none;
+    z-index: 1000;
+}
+
+.shop-card-content {
+    display: flex;
+    gap: 12px;
+    align-items: stretch;
+}
+
+.shop-card-image {
+    width: 64px;
+    height: 64px;
+    background: rgba(12, 16, 20, 0.8);
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.03);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 6px;
+    flex-shrink: 0;
+    position: relative;
+}
+
+.shop-card-image::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(circle at center, var(--bg-color, rgba(255,255,255,0.05)), transparent 70%);
+    opacity: 0.15;
+}
+
+.shop-card-image img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5));
+    transition: transform 0.2s;
+    position: relative;
+    z-index: 2;
+}
+
+.shop-card:hover .shop-card-image img {
+    transform: scale(1.08);
+}
+
+.shop-card-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    min-width: 0;
+}
+
+.shop-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 2px;
+}
+
+.shop-card-name {
+    font-size: 13px;
+    font-weight: 700;
+    color: #f8fafc;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    letter-spacing: 0.3px;
+}
+
+.shop-card-price {
+    font-size: 12px;
+    font-weight: 800;
+    color: #10b981;
+    background: rgba(16, 185, 129, 0.1);
+    border: 1px solid rgba(16, 185, 129, 0.2);
+    padding: 2px 6px;
+    border-radius: 4px;
+    flex-shrink: 0;
+    margin-left: 8px;
+}
+
+.shop-card-desc {
+    font-size: 10px;
+    color: #94a3b8;
+    line-height: 1.4;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    margin-bottom: 6px;
+}
+
+.shop-card-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: auto;
+    gap: 10px;
+}
+
+.shop-card-tags {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-width: 0;
+    flex: 1;
+}
+
+.shop-card-cat {
+    font-size: 9px;
+    color: #64748b;
+    text-transform: uppercase;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+}
+
+.shop-card-rarity {
+    font-size: 9px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.shop-buy-btn {
+    height: 24px;
+    min-width: 56px;
+    border: 1px solid rgba(16, 185, 129, 0.45);
+    border-radius: 4px;
+    background: rgba(16, 185, 129, 0.13);
+    color: #d1fae5;
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.8px;
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.shop-buy-btn:hover {
+    background: rgba(16, 185, 129, 0.24);
+    border-color: rgba(52, 211, 153, 0.85);
+    color: #ffffff;
+}
+
+.shop-buy-btn:active {
+    background: rgba(16, 185, 129, 0.34);
+}
+
+.shop-card.rarity-border-common { border-left: 3px solid #8b949e; }
+.shop-card.rarity-border-uncommon { border-left: 3px solid #3fb950; }
+.shop-card.rarity-border-rare { border-left: 3px solid #58a6ff; }
+.shop-card.rarity-border-epic { border-left: 3px solid #a371f7; }
+.shop-card.rarity-border-legendary { border-left: 3px solid #d29922; }
+.shop-card.rarity-border-mythic { border-left: 3px solid #f85149; }
+
+.shop-card-image.rarity-bg-common { border-color: rgba(139, 148, 158, 0.3); }
+.shop-card-image.rarity-bg-uncommon { border-color: rgba(63, 185, 80, 0.3); }
+.shop-card-image.rarity-bg-rare { border-color: rgba(88, 166, 255, 0.3); }
+.shop-card-image.rarity-bg-epic { border-color: rgba(163, 113, 247, 0.3); }
+.shop-card-image.rarity-bg-legendary { border-color: rgba(210, 153, 34, 0.4); }
+.shop-card-image.rarity-bg-mythic { border-color: rgba(248, 81, 73, 0.4); }
+
+.rarity-text-common { color: #8b949e; }
+.rarity-text-uncommon { color: #3fb950; }
+.rarity-text-rare { color: #58a6ff; }
+.rarity-text-epic { color: #a371f7; }
+.rarity-text-legendary { color: #d29922; }
+.rarity-text-mythic { color: #f85149; }
