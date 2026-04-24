@@ -1,6 +1,6 @@
 # corex-inventory
 
-> Tetris-grid inventory for COREX Framework
+> Tetris-grid inventory with weight, slots, drops, shops, and weapon support.
 
 Part of the [COREX Framework](https://github.com/ABUGIZA/COREX-Framework).
 
@@ -22,7 +22,7 @@ ensure corex-inventory
 Download the latest release ZIP from the **Releases** tab and replace the folder.
 
 ## Docs
-📖 <https://corex-zombies.gitbook.io/corex-docs>
+📖 <https://corex-zombies.gitbook.io/corex-docs/resources/systems/corex-inventory>
 
 ## Community
 💬 <https://discord.gg/G95rtnb9sg>
