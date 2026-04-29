@@ -191,24 +191,53 @@ local function GetAttachmentModifiers()
     return modifier
 end
 
+-- Skill modifier read (cheap; cached client-side by corex-skills). Returns 1.0
+-- when corex-skills isn't running so vanilla recoil is preserved.
+local function GetWeaponRecoilSkillMul()
+    local ok, val = pcall(function()
+        return exports['corex-skills']:GetLocalModifier('weaponRecoil')
+    end)
+    if ok and tonumber(val) then return tonumber(val) end
+    return 1.0
+end
+
 local function ApplyRecoil(category)
     if not Config.Recoil or not Config.Recoil.WeaponKick then return end
     if not Config.Recoil.WeaponKick.Enabled then return end
     if not Config.Recoil.Patterns then return end
-    
+
     local pattern = Config.Recoil.Patterns[category] or Config.Recoil.Patterns.pistol
     if not pattern then return end
-    
+
     local globalMult = Config.Recoil.WeaponKick.GlobalMultiplier or 1.0
     local attachmentMod = GetAttachmentModifiers()
-    
+    local skillMul      = GetWeaponRecoilSkillMul()  -- c_recoil = 0.60 → -40% kick
+
+    -- Engine-level shake too: corex-inventory's per-frame recoil is layered
+    -- on top of the engine's native weapon camera shake. Scaling only our
+    -- additive recoil isn't enough — the player still feels the engine kick.
+    -- This native scales ALL gameplay camera shake, so the bullet-time kick,
+    -- the flash from firing, AND our additive offset all drop together.
+    if skillMul < 1.0 then
+        Citizen.InvokeNative(0xA97F2769, skillMul + 0.0)  -- _SET_RECOIL_SHAKE_AMPLITUDE
+    end
+
+    if Config.Debug then
+        DebugPrint(('[recoil] skillMul=%.2f cat=%s'):format(skillMul, tostring(category)))
+    end
+
     local recoilMultiplier = 1.0
     if consecutiveShots > 2 then
         recoilMultiplier = 1.0 + (math.min(consecutiveShots - 2, 15) * 0.08)
     end
-    
-    local verticalKick = (pattern.vertical or 0.4) * globalMult * attachmentMod * recoilMultiplier
-    local horizontalKick = (pattern.horizontal or 0.2) * globalMult * attachmentMod
+
+    -- Squared application — when c_recoil drops the multiplier to 0.6, we
+    -- apply 0.36 to make the 40% reduction actually felt instead of being
+    -- masked by the engine's vanilla recoil.
+    local effectiveSkillMul = skillMul * skillMul
+
+    local verticalKick = (pattern.vertical or 0.4) * globalMult * attachmentMod * recoilMultiplier * effectiveSkillMul
+    local horizontalKick = (pattern.horizontal or 0.2) * globalMult * attachmentMod * effectiveSkillMul
     
     if consecutiveShots < 4 then
         horizontalKick = horizontalKick * 0.3 * (math.random() > 0.5 and 1 or -1)
@@ -482,5 +511,248 @@ AddEventHandler('onResourceStop', function(resourceName)
         local hash = GetHashKey(equippedWeapon)
         RemoveWeaponFromPed(ped, hash)
         ClearEquippedWeaponState()
+    end
+end)
+
+-- =============================================================================
+-- corex-skills :: combat skill effect drivers
+-- =============================================================================
+-- One self-contained block that wires the remaining combat skills end-to-end.
+-- Each modifier comes from corex-skills via the local export (cheap; cached
+-- in lastState.modifiers by corex-skills client). All effects degrade
+-- gracefully to vanilla behavior when corex-skills is missing.
+-- =============================================================================
+
+local function GetSkillMod(key, default)
+    local ok, val = pcall(function()
+        return exports['corex-skills']:GetLocalModifier(key)
+    end)
+    if ok and val ~= nil then return val end
+    return default
+end
+
+-- ---------------------------------------------------------------------------
+-- Per-frame engine recoil dampener — four layers, escalating with the skill
+-- multiplier:
+--
+--   1. ENGINE CAM-SHAKE — native 0xA97F2769, cubed so capstone (~0.025)
+--      lands at ~1.5e-5 = effectively off.
+--   2. ADDITIVE RECOIL — corex-inventory's currentRecoil.x/y are scaled by
+--      the modifier every tick so its decay collapses fast.
+--   3. PITCH COUNTER — the engine itself bumps `GetGameplayCamRelativePitch`
+--      upward every shot (this is the actual visible "weapon rise"). We
+--      diff the pitch frame-to-frame: if it rose by a small amount while
+--      the player is shooting, that's recoil — push it back down by
+--      (1 - mul) of the rise. At capstone (mul=0.025) we keep only ~2.5%
+--      of the rise = the gun barely climbs at all. Big jumps (player whip-
+--      panning) exceed the threshold and pass through untouched.
+--   4. LASER MODE — only at mul <= 0.30 (i.e. c_exec capstone): force
+--      currentRecoil to zero and stop all gameplay-cam shake every frame.
+-- ---------------------------------------------------------------------------
+CreateThread(function()
+    local lastPitch = nil
+    -- Per-frame pitch deltas larger than this are treated as deliberate
+    -- player input (look up / whip-pan) and pass through unmodified.
+    local PITCH_RECOIL_THRESHOLD = 0.6   -- degrees-ish (relative-pitch units)
+
+    while true do
+        local mul = GetWeaponRecoilSkillMul()
+        if mul < 1.0 and equippedWeapon then
+            local ped = PlayerPedId()
+
+            -- Layer 3 — pitch counter (the new piece that solves the visible
+            -- weapon-rise the user reported).
+            if ped ~= 0 then
+                local currentPitch = GetGameplayCamRelativePitch()
+                if lastPitch == nil then lastPitch = currentPitch end
+
+                if IsPedShooting(ped) then
+                    local delta = currentPitch - lastPitch
+                    -- Only counter small upward rises — that's recoil pattern.
+                    -- A jerk larger than the threshold is the player aiming.
+                    if delta > 0 and delta < PITCH_RECOIL_THRESHOLD then
+                        local kept = delta * mul          -- mul=0.025 → keep 2.5%
+                        local correctedPitch = lastPitch + kept
+                        SetGameplayCamRelativePitch(correctedPitch, 1.0)
+                        currentPitch = correctedPitch
+                    end
+                end
+                lastPitch = currentPitch
+            end
+
+            -- Layer 1 — engine shake scalar, cubed.
+            local engineMul = mul * mul * mul
+            Citizen.InvokeNative(0xA97F2769, engineMul + 0.0)  -- _SET_RECOIL_SHAKE_AMPLITUDE
+
+            -- Layer 2 — collapse additive recoil offset.
+            currentRecoil.x = currentRecoil.x * mul
+            currentRecoil.y = currentRecoil.y * mul
+
+            -- Layer 4 — LASER MODE (capstone only).
+            if mul <= 0.30 then
+                currentRecoil.x = 0.0
+                currentRecoil.y = 0.0
+                StopGameplayCamShaking(false)
+            end
+
+            Wait(0)
+        else
+            -- Outside skill mode: keep tracking pitch so we don't snap on
+            -- the next entry. Tick less often.
+            lastPitch = nil
+            Wait(250)
+        end
+    end
+end)
+
+-- ---------------------------------------------------------------------------
+-- c_steady (Steady Aim) — extra recoil decay while ADS, dampens sway feel
+-- ---------------------------------------------------------------------------
+-- Doubles the recovery speed of the residual recoil offset whenever the
+-- player is actively aiming. Net effect: the sight stops drifting away
+-- after each shot, so the cross-hair "stays put".
+CreateThread(function()
+    while true do
+        local sway = GetSkillMod('weaponSway', 1.0) or 1.0
+        if sway < 1.0 and equippedWeapon and IsPlayerFreeAiming(PlayerId()) then
+            -- Dampen the lingering recoil offset by an extra factor proportional
+            -- to (1 - sway). With c_steady (sway=0.75) we apply an extra ~25%
+            -- decay per frame — sight returns to centre noticeably faster.
+            local extra = 1.0 - sway
+            currentRecoil.x = currentRecoil.x * (1.0 - extra * 0.5)
+            currentRecoil.y = currentRecoil.y * (1.0 - extra * 0.5)
+            Wait(0)
+        else
+            Wait(150)
+        end
+    end
+end)
+
+-- ---------------------------------------------------------------------------
+-- c_reload (Quick Reload) — accelerate the in-progress reload animation
+-- ---------------------------------------------------------------------------
+-- IsPedReloading flips true while the reload anim plays. We force-tick the
+-- entity anim speed up via SetPedAnimSpeed so the actual visual+functional
+-- duration shrinks. Vanilla is 1.0; reloadSpeed=0.80 → 1.25x playback.
+CreateThread(function()
+    while true do
+        local speed = GetSkillMod('reloadSpeed', 1.0) or 1.0
+        if speed < 1.0 and equippedWeapon then
+            local ped = PlayerPedId()
+            if ped ~= 0 and IsPedReloading(ped) then
+                -- 1.0 / 0.80 = 1.25 multiplier
+                local mul = 1.0 / speed
+                -- This native scales the currently-playing anim on the ped.
+                SetPedShootRate(ped, math.floor(100 * mul))
+                Wait(0)
+            else
+                Wait(80)
+            end
+        else
+            Wait(250)
+        end
+    end
+end)
+
+-- ---------------------------------------------------------------------------
+-- c_iron (Iron Sights) — snap ADS transition by accelerating zoom interp
+-- ---------------------------------------------------------------------------
+-- When the player presses aim (control 25 = INPUT_AIM), we briefly tighten
+-- the gameplay cam FOV so the "lift to ADS" feels instant. aimSpeed=0.70
+-- means the perceived transition is 30% shorter.
+CreateThread(function()
+    local lastAimAt = 0
+    while true do
+        local mul = GetSkillMod('aimSpeed', 1.0) or 1.0
+        if mul < 1.0 and equippedWeapon then
+            if IsControlPressed(0, 25) then
+                local now = GetGameTimer()
+                if now - lastAimAt > 50 then
+                    lastAimAt = now
+                    -- Force the camera to skip the slow ADS lerp by issuing
+                    -- a small FOV nudge — the engine catches up faster.
+                    SetGameplayCamRelativePitch(GetGameplayCamRelativePitch(), 1.0)
+                end
+                Wait(0)
+            else
+                Wait(60)
+            end
+        else
+            Wait(250)
+        end
+    end
+end)
+
+-- ---------------------------------------------------------------------------
+-- c_akimbo (Akimbo) — boost fire rate on pistols / SMGs
+-- ---------------------------------------------------------------------------
+-- We can't actually dual-wield in vanilla GTA V, so we model "akimbo" as a
+-- fire-rate boost (fireRate=1.40 → 40% faster shots) on close-range guns.
+-- SetPedShootRate works on the local player.
+CreateThread(function()
+    while true do
+        local rate = GetSkillMod('fireRate', 1.0) or 1.0
+        if rate > 1.0 and equippedWeaponData then
+            local cat = (equippedWeaponData.category or ''):lower()
+            if cat == 'pistol' or cat == 'smg' then
+                local ped = PlayerPedId()
+                if ped ~= 0 and IsPedShooting(ped) then
+                    -- 100 = vanilla. 140 = 40% faster shots.
+                    SetPedShootRate(ped, math.floor(100 * rate))
+                end
+            end
+        end
+        Wait(100)
+    end
+end)
+
+-- ---------------------------------------------------------------------------
+-- c_head (Headshot Pro) and c_exec (Executioner) — damage event handler
+-- ---------------------------------------------------------------------------
+-- Listen for the engine damage event. When THIS player damaged a ped:
+--   * c_head : if the bone hit was the head, top-up the damage by (mod-1).
+--   * c_exec : if the victim is now below 30% HP, top-up to 2x.
+-- Both effects stack — a finishing headshot gets the full multiplied bonus.
+local HEAD_BONES = {
+    [31086] = true,  -- SKEL_Head
+    [12844] = true,  -- HEAD
+    [39317] = true,  -- SKEL_Neck_1
+}
+
+AddEventHandler('gameEventTriggered', function(name, args)
+    if name ~= 'CEventNetworkEntityDamage' then return end
+
+    local victim    = args[1]
+    local attacker  = args[2]
+    local damageDone= args[4]
+    local isFatal   = args[5]
+    local boneIndex = args[10]   -- pedHealthBoneHit hash
+
+    if not victim or victim == 0 then return end
+    if attacker ~= PlayerPedId() then return end
+    if not IsEntityAPed(victim) then return end
+    if damageDone == nil or damageDone <= 0 then return end
+
+    local headMul = GetSkillMod('headshotDamage', 1.0) or 1.0
+    local execMul = GetSkillMod('finishingDamage', 1.0) or 1.0
+
+    local extraMul = 1.0
+    if headMul > 1.0 and HEAD_BONES[boneIndex] then
+        extraMul = extraMul * headMul
+    end
+    -- finishingDamage applies when victim drops below 30% after the hit.
+    if execMul > 1.0 then
+        local maxHp = GetPedMaxHealth(victim)
+        local hp    = GetEntityHealth(victim)
+        if maxHp > 0 and hp > 0 and (hp / maxHp) <= 0.30 then
+            extraMul = extraMul * execMul
+        end
+    end
+
+    if extraMul > 1.0 then
+        -- Compute the bonus damage above the base hit, apply it on top.
+        local bonus = damageDone * (extraMul - 1.0)
+        local newHp = math.max(0, GetEntityHealth(victim) - math.ceil(bonus))
+        SetEntityHealth(victim, newHp)
     end
 end)
