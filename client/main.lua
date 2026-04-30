@@ -44,6 +44,7 @@ end
 
 local isOpen = false
 local isShopOpen = false
+local hotbarVisible = true
 local currentShop = nil
 local currentShopType = nil
 local droppedItems = {}
@@ -53,6 +54,7 @@ local PICKUP_DISTANCE = Config.PickupDistance or 3.0
 local DEFAULT_PROP = 'prop_med_bag_01b'
 local MAX_DROPPED_ITEMS = 500
 local activeRentalVehicle = nil
+local weaponImageCache = nil
 
 local function GetRarityColor(rarity)
     if not Rarity then return {r = 139, g = 148, b = 158, a = 255} end
@@ -86,6 +88,99 @@ local function GetItemDefinition(itemName)
 
     local ammoDef = Ammo[itemName]
     if ammoDef then return ammoDef end
+
+    return nil
+end
+
+local function BuildWeaponImageCache()
+    if weaponImageCache then
+        return weaponImageCache
+    end
+
+    weaponImageCache = {}
+
+    local function CacheWeaponImageHash(hash, imageName)
+        if not hash or hash == 0 or not imageName or imageName == '' then
+            return
+        end
+
+        weaponImageCache[hash] = imageName
+        weaponImageCache[tostring(hash)] = imageName
+
+        local unsignedHash = hash
+        if hash < 0 then
+            unsignedHash = hash + 4294967296
+        end
+
+        local signedHash = hash
+        if hash >= 2147483648 then
+            signedHash = hash - 4294967296
+        end
+
+        weaponImageCache[unsignedHash] = imageName
+        weaponImageCache[signedHash] = imageName
+        weaponImageCache[tostring(unsignedHash)] = imageName
+        weaponImageCache[tostring(signedHash)] = imageName
+    end
+
+    for itemName, itemDef in pairs(Items or {}) do
+        if type(itemName) == 'string' and string.sub(string.lower(itemName), 1, 7) == 'weapon_' and itemDef and itemDef.image then
+            local itemHash = GetHashKey(string.upper(itemName))
+            CacheWeaponImageHash(itemHash, itemDef.image)
+        end
+    end
+
+    for weaponName, weaponDef in pairs(Weapons or {}) do
+        local hash = GetHashKey(string.upper(weaponName))
+        if weaponDef and weaponDef.image then
+            CacheWeaponImageHash(hash, weaponDef.image)
+        end
+    end
+
+    return weaponImageCache
+end
+
+local function GetWeaponImage(identifier)
+    if identifier == nil then
+        return nil
+    end
+
+    if type(identifier) == 'number' then
+        local cache = BuildWeaponImageCache()
+        local direct = cache[identifier]
+        if direct then return direct end
+
+        local stringKey = tostring(identifier)
+        if cache[stringKey] then
+            return cache[stringKey]
+        end
+
+        local unsignedIdentifier = identifier
+        if identifier < 0 then
+            unsignedIdentifier = identifier + 4294967296
+        end
+
+        local signedIdentifier = identifier
+        if identifier >= 2147483648 then
+            signedIdentifier = identifier - 4294967296
+        end
+
+        return cache[unsignedIdentifier]
+            or cache[signedIdentifier]
+            or cache[tostring(unsignedIdentifier)]
+            or cache[tostring(signedIdentifier)]
+    end
+
+    local itemDef = GetItemDefinition(identifier)
+    if itemDef and itemDef.image then
+        return itemDef.image
+    end
+
+    local upperName = string.upper(tostring(identifier))
+    itemDef = GetItemDefinition(upperName)
+    if itemDef and itemDef.image then
+        return itemDef.image
+    end
 
     return nil
 end
@@ -130,6 +225,16 @@ local function CalculateInventoryWeight(items)
     end
 
     return totalWeight
+end
+
+local function GetCashItemCountFromInventory(items)
+    local total = 0
+    for _, item in ipairs(items or {}) do
+        if item and type(item.name) == 'string' and string.lower(item.name) == 'cash' then
+            total = total + (tonumber(item.count) or 0)
+        end
+    end
+    return math.max(0, math.floor(total))
 end
 
 local function SpawnDropProp(dropId, itemData)
@@ -285,7 +390,7 @@ function OpenVehicleShop(shopName)
     SendNUIMessage({
         action = 'openVehicleShop',
         shopName = shop.label or catalog.label or shopName,
-        playerMoney = Corex.Functions.GetMoney('cash'),
+        playerMoney = GetCashItemCountFromInventory(playerInventory),
         catalog = catalog
     })
 end
@@ -367,6 +472,18 @@ RegisterNetEvent('corex-inventory:client:update', function(data)
     end
 end)
 
+local function SetHotbarVisible(visible)
+    hotbarVisible = visible ~= false
+    SendNUIMessage({
+        action = 'setHotbarVisible',
+        visible = hotbarVisible
+    })
+end
+
+RegisterNetEvent('corex-inventory:client:setHotbarVisible', function(visible)
+    SetHotbarVisible(visible)
+end)
+
 RegisterNetEvent('corex-inventory:client:syncDroppedItems', function(items)
     DeleteAllProps()
     droppedItems = items or {}
@@ -443,6 +560,16 @@ RegisterNUICallback('moveItem', function(data, cb)
     cb('ok')
 end)
 
+RegisterNUICallback('compactInventory', function(data, cb)
+    local positions = data and data.positions
+    if type(positions) ~= 'table' then
+        cb('invalid')
+        return
+    end
+    TriggerServerEvent('corex-inventory:server:compact', positions)
+    cb('ok')
+end)
+
 RegisterNUICallback('dropItem', function(data, cb)
     if not isReady then cb('not_ready') return end
 
@@ -486,27 +613,56 @@ local GIVE_DISTANCE = Config.GiveDistance or 5.0
 
 local function GetNearbyPlayers()
     if not isReady then return {} end
-    local players = Corex.Functions.GetNearbyPlayers and Corex.Functions.GetNearbyPlayers(GIVE_DISTANCE) or {}
-    table.sort(players, function(a, b) return a.distance < b.distance end)
 
     local nearbyPlayers = {}
-    for _, player in ipairs(players) do
-        nearbyPlayers[#nearbyPlayers + 1] = {
-            id = player.serverId,
-            name = player.name,
-            distance = player.distance
-        }
+
+    -- Coba pakai fungsi framework jika tersedia
+    if Corex and Corex.Functions and Corex.Functions.GetNearbyPlayers then
+        local ok, players = pcall(Corex.Functions.GetNearbyPlayers, GIVE_DISTANCE)
+        if ok and type(players) == 'table' then
+            table.sort(players, function(a, b) return a.distance < b.distance end)
+            for _, player in ipairs(players) do
+                nearbyPlayers[#nearbyPlayers + 1] = {
+                    id       = player.serverId,
+                    name     = player.name,
+                    distance = player.distance
+                }
+            end
+            return nearbyPlayers
+        end
     end
 
+    -- Fallback: scan manual semua player aktif
+    local myPed    = PlayerPedId()
+    local myCoords = GetEntityCoords(myPed)
+    local myId     = GetPlayerServerId(PlayerId())
+
+    for _, playerId in ipairs(GetActivePlayers()) do
+        local serverId = GetPlayerServerId(playerId)
+        if serverId ~= myId then
+            local ped    = GetPlayerPed(playerId)
+            local coords = GetEntityCoords(ped)
+            local dist   = #(myCoords - coords)
+            if dist <= GIVE_DISTANCE then
+                nearbyPlayers[#nearbyPlayers + 1] = {
+                    id       = serverId,
+                    name     = GetPlayerName(playerId) or ('Player ' .. serverId),
+                    distance = dist
+                }
+            end
+        end
+    end
+
+    table.sort(nearbyPlayers, function(a, b) return a.distance < b.distance end)
     return nearbyPlayers
 end
 
 RegisterNUICallback('getNearbyPlayers', function(_, cb)
-    if not isReady then cb('not_ready') return end
-    local players = GetNearbyPlayers()
+    -- Tetap kirim players meski isReady false, agar list di-update (kosong)
+    local players = isReady and GetNearbyPlayers() or {}
 
     SendNUIMessage({
-        action = 'updateNearbyPlayers',
+        action  = 'updateNearbyPlayers',
         players = players
     })
 
@@ -516,6 +672,31 @@ end)
 RegisterNUICallback('giveItem', function(data, cb)
     if data.targetPlayer and data.name and data.slot then
         TriggerServerEvent('corex-inventory:server:give', data.targetPlayer, data.name, data.count or 1, data.slot)
+    end
+    cb('ok')
+end)
+
+RegisterNUICallback('splitItem', function(data, cb)
+    if data and data.name and data.slot and data.count then
+        local splitCount = tonumber(data.count) or 0
+        splitCount = math.max(1, math.min(9999, math.floor(splitCount)))
+        TriggerServerEvent('corex-inventory:server:split', data.name, splitCount, data.slot)
+    end
+    cb('ok')
+end)
+
+RegisterNUICallback('mergeItem', function(data, cb)
+    -- Merge two same-name items in player inventory
+    if data.fromSlot and data.toSlot then
+        TriggerServerEvent('corex-inventory:server:mergeItem', data.fromSlot, data.toSlot)
+    end
+    cb('ok')
+end)
+
+RegisterNUICallback('mergeGroundItem', function(data, cb)
+    -- Merge a ground item into a player inventory stack of the same name
+    if data.groundSlot and data.toSlot then
+        TriggerServerEvent('corex-inventory:server:mergeGroundItem', data.groundSlot, data.toSlot)
     end
     cb('ok')
 end)
@@ -862,8 +1043,8 @@ function OpenShop(shopName)
         end
     end
 
-    local playerMoney = Corex.Functions.GetMoney('cash')
     local currentInventory = playerInventory or {}
+    local playerMoney = GetCashItemCountFromInventory(currentInventory)
     local currentWeight = CalculateInventoryWeight(currentInventory)
 
     local allItems = GetAllItemsData()
@@ -889,6 +1070,12 @@ function CloseShop()
     CloseInventory()
 end
 
+-- BUG 1 NOTE: These NUI callbacks must only be registered ONCE. A prior version of this
+-- file registered purchaseShopItem and purchaseVehicleShopItem twice (once around line 350
+-- alongside OpenShop/CloseShop declarations, and again here), causing every purchase to
+-- fire TriggerServerEvent twice â€” resulting in double charges or duplicate item grants.
+-- If you re-organize this file, ensure RegisterNUICallback is never called more than once
+-- per callback name. FiveM does NOT deduplicate duplicate NUI callbacks.
 RegisterNUICallback('purchaseShopItem', function(data, cb)
     if not currentShop then
         cb({success = false, message = "No shop open"})
@@ -943,7 +1130,7 @@ RegisterNetEvent('corex-inventory:client:vehiclePurchaseResult', function(succes
     if isOpen and isShopOpen and currentShopType == 'vehicle' then
         SendNUIMessage({
             action = 'updateVehicleShopMoney',
-            playerMoney = newMoney or Corex.Functions.GetMoney('cash')
+            playerMoney = newMoney or GetCashItemCountFromInventory(playerInventory)
         })
     end
 end)
@@ -1042,6 +1229,8 @@ end)
 
 exports('OpenShop', OpenShop)
 exports('CloseShop', CloseShop)
+exports('GetItemDefinition', GetItemDefinition)
+exports('GetWeaponImage', GetWeaponImage)
 
 -- ========== LOOT CONTAINER MODE ==========
 
