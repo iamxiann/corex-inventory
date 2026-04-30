@@ -19,8 +19,16 @@ end)
 
 local function SpawnNPC(shopName, npcData)
     if not npcData or not npcData.coords then return nil end
+    if type(npcData.model) ~= 'string' or npcData.model == '' then
+        print('^1[COREX-INVENTORY] Invalid NPC model for shop: ' .. tostring(shopName) .. '^0')
+        return nil
+    end
 
     local modelHash = GetHashKey(npcData.model)
+    if modelHash == 0 or not IsModelInCdimage(modelHash) or not IsModelValid(modelHash) then
+        print('^1[COREX-INVENTORY] NPC model is invalid or missing: ' .. tostring(npcData.model) .. '^0')
+        return nil
+    end
 
     RequestModel(modelHash)
     local attempts = 0
@@ -34,7 +42,22 @@ local function SpawnNPC(shopName, npcData)
         return nil
     end
 
-    local npc = CreatePed(4, modelHash, npcData.coords.x, npcData.coords.y, npcData.coords.z, npcData.coords.w, false, true)
+    local x = tonumber(npcData.coords.x)
+    local y = tonumber(npcData.coords.y)
+    local z = tonumber(npcData.coords.z)
+    local h = tonumber(npcData.coords.w) or 0.0
+    if not x or not y or not z then
+        print('^1[COREX-INVENTORY] Invalid NPC coords for shop: ' .. tostring(shopName) .. '^0')
+        SetModelAsNoLongerNeeded(modelHash)
+        return nil
+    end
+
+    local npc = CreatePed(4, modelHash, x, y, z, h, false, true)
+    if not npc or npc == 0 or not DoesEntityExist(npc) then
+        print('^1[COREX-INVENTORY] CreatePed failed for shop: ' .. tostring(shopName) .. '^0')
+        SetModelAsNoLongerNeeded(modelHash)
+        return nil
+    end
 
     SetEntityAsMissionEntity(npc, true, true)
     SetPedFleeAttributes(npc, 0, false)
