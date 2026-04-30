@@ -8,7 +8,7 @@ Config.Debug = false
 Config.MaxWeight = 200.0
 
 Config.GridWidth = 8
-Config.GridHeight = 10
+Config.GridHeight = 8
 
 Config.DefaultSize = {w = 1, h = 1}
 
