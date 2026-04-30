@@ -25,6 +25,27 @@ Rarity = {
 }
 
 Items = {
+    ['cash'] = {
+        label = 'Coin',
+        weight = 0.0,
+        size = {w = 1, h = 1},
+        stackable = true,
+        maxStack = 1000000,
+        usable = false,
+        image = 'coin.png',
+        rarity = 'common'
+    },
+['revive_kit'] = {
+        label    = 'Revive Kit',
+        weight   = 0.5,
+        size     = { w = 1, h = 1 },
+        stackable = true,
+        maxStack = 3,
+        usable   = true,
+        image    = 'revive_kit.png',
+        rarity   = 'rare',
+    },
+
     -- =====================
     -- WEAPONS - Pistols
     -- =====================
@@ -341,28 +362,74 @@ Items = {
         rarity = 'common',
         survival = { hunger = 35 }
     },
-    ['raw_meat'] = {
-        label = 'Raw Meat',
+    ['raw_beef'] = {
+        label = 'Raw Beef',
         weight = 0.5,
         size = {w = 1, h = 1},
         stackable = true,
         maxStack = 10,
         usable = true,
-        image = 'raw_meat.png',
+        image = 'raw_beef.png',
         rarity = 'common',
         survival = { hunger = 15, infectionRisk = 0.10 }
     },
-    ['cooked_meat'] = {
-        label = 'Cooked Meat',
+['raw_pork'] = {
+        label = 'Raw Pork',
+        weight = 0.5,
+        size = {w = 1, h = 1},
+        stackable = true,
+        maxStack = 10,
+        usable = true,
+        image = 'raw_pork.png',
+        rarity = 'common',
+        survival = { hunger = 15, infectionRisk = 0.10 }
+    },
+['raw_chicken'] = {
+        label = 'Raw Chicken',
+        weight = 0.5,
+        size = {w = 1, h = 1},
+        stackable = true,
+        maxStack = 10,
+        usable = true,
+        image = 'raw_chicken.png',
+        rarity = 'common',
+        survival = { hunger = 15, infectionRisk = 0.10 }
+    },
+
+    ['cooked_beef'] = {
+        label = 'Cooked beef',
         weight = 0.4,
         size = {w = 1, h = 1},
         stackable = true,
         maxStack = 10,
         usable = true,
-        image = 'cooked_meat.png',
+        image = 'cooked_beef.png',
         rarity = 'uncommon',
-        survival = { hunger = 50 }
+        survival = { hunger = 35 }
     },
+    ['cooked_pork'] = {
+        label = 'Cooked Pork',
+        weight = 0.4,
+        size = {w = 1, h = 1},
+        stackable = true,
+        maxStack = 10,
+        usable = true,
+        image = 'cooked_pork.png',
+        rarity = 'uncommon',
+        survival = { hunger = 35 }
+    },
+    ['cooked_chicken'] = {
+        label = 'Cooked Chicken',
+        weight = 0.4,
+        size = {w = 1, h = 1},
+        stackable = true,
+        maxStack = 10,
+        usable = true,
+        image = 'cooked_chicken.png',
+        rarity = 'uncommon',
+        survival = { hunger = 35 }
+    },
+
 
     -- =====================
     -- SURVIVAL - Drinks
@@ -376,7 +443,7 @@ Items = {
         usable = true,
         image = 'clean_water.png',
         rarity = 'common',
-        survival = { thirst = 40 }
+        survival = { thirst = 35 }
     },
     ['dirty_water'] = {
         label = 'Dirty Water',
@@ -387,7 +454,7 @@ Items = {
         usable = true,
         image = 'Dirty_water.png',
         rarity = 'common',
-        survival = { thirst = 20, infectionRisk = 0.10 }
+        survival = { thirst = 15, infectionRisk = 0.10 }
     },
     ['energy_drink'] = {
         label = 'Energy Drink',
