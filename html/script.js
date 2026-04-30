@@ -20,6 +20,10 @@ let dragOffsetY = 0;
 let dragPreview = null;
 let isActionPending = false;
 
+// Persisted UI state (so sort/search survive inventory updates)
+window.__invSearchQuery = window.__invSearchQuery || '';
+window.__invSortMode = window.__invSortMode || 'default';
+
 function nuiRequestId() {
     if (window.crypto && typeof window.crypto.randomUUID === 'function') {
         return window.crypto.randomUUID();
@@ -33,6 +37,93 @@ const playerGrid = document.getElementById('player-grid');
 const dropGrid = document.getElementById('drop-grid');
 const contextMenu = document.getElementById('context-menu');
 const weightSegmentsContainer = document.getElementById('weight-segments');
+const itemInfoTitle = document.getElementById('item-info-title');
+const itemInfoRarity = document.getElementById('item-info-rarity');
+const itemInfoMeta = document.getElementById('item-info-meta');
+const itemInfoDesc = document.getElementById('item-info-desc');
+
+function resolveItemDefinition(itemName) {
+    if (!itemName) {
+        return { name: '', size: { w: 1, h: 1 }, label: 'Unknown Item', weight: 0 };
+    }
+
+    const rawName = String(itemName);
+    const lowerName = rawName.toLowerCase();
+    const upperName = rawName.toUpperCase();
+
+    return itemsData[rawName]
+        || itemsData[lowerName]
+        || itemsData[upperName]
+        || Object.values(itemsData).find((def) => {
+            const defName = String(def?.name || '').toLowerCase();
+            const defLabel = String(def?.label || '').toLowerCase();
+            return defName === lowerName || defLabel === lowerName;
+        })
+        || { name: rawName, size: { w: 1, h: 1 }, label: rawName, weight: 0 };
+}
+
+function normalizedItemName(itemOrName) {
+    const rawName = typeof itemOrName === 'string' ? itemOrName : itemOrName?.name;
+    return String(rawName || '').trim().toLowerCase();
+}
+
+function canItemsMerge(sourceItem, targetItem) {
+    if (!sourceItem || !targetItem || sourceItem.slot === targetItem.slot) {
+        return false;
+    }
+
+    // Client-side only checks name match.
+    // Server remains the source of truth (stackable/maxStack/weight rules).
+    return normalizedItemName(sourceItem) === normalizedItemName(targetItem);
+}
+
+function formatItemDetails(item, itemDef) {
+    const details = [];
+    const stackLabel = itemDef.stackable ? `Stack ${item.count || 1}/${itemDef.maxStack || 'inf'}` : 'Non-stackable';
+    details.push(stackLabel);
+
+    if (itemDef.weight != null) {
+        details.push(`Weight ${(itemDef.weight * (item.count || 1)).toFixed(2)}kg`);
+    }
+
+    if (itemDef.size) {
+        details.push(`Size ${(itemDef.size.w || 1)}x${(itemDef.size.h || 1)}`);
+    }
+
+    if (itemDef.category) {
+        details.push(String(itemDef.category));
+    }
+
+    const meta = item?.metadata || {};
+    if (meta.ammo != null) details.push(`Ammo ${meta.ammo}`);
+    if (meta.durability != null) details.push(`Durability ${Math.round(Number(meta.durability) || 0)}%`);
+    if (meta.serial) details.push(`Serial ${meta.serial}`);
+
+    return details.join(' â€¢ ');
+}
+
+function updateItemInfo(item) {
+    if (!item) {
+        itemInfoTitle.textContent = 'Item Info';
+        itemInfoRarity.textContent = 'Select an item';
+        itemInfoMeta.textContent = 'Hover or click an item to see details.';
+        itemInfoDesc.textContent = 'Item description and metadata will appear here.';
+        return;
+    }
+
+    const itemDef = resolveItemDefinition(item.name);
+    const rarity = String(itemDef.rarity || item.rarity || 'common');
+    const meta = item.metadata || {};
+    const description = meta.description
+        || itemDef.description
+        || itemDef.survival && 'Consumable survival item.'
+        || (itemDef.usable ? 'Usable inventory item.' : 'Stored inventory item.');
+
+    itemInfoTitle.textContent = itemDef.label || item.name;
+    itemInfoRarity.textContent = rarity.toUpperCase();
+    itemInfoMeta.textContent = formatItemDetails(item, itemDef);
+    itemInfoDesc.textContent = description;
+}
 
 function initializeUI() {
     renderSlots(playerGrid, CONFIG.gridCols, CONFIG.gridRows);
@@ -126,6 +217,280 @@ function checkCollision(x, y, w, h, items, excludeSlot) {
     return false;
 }
 
+function applySearchFallback(query) {
+    const q = String(query || '').trim().toLowerCase();
+    window.__invSearchQuery = q;
+    const grid = document.getElementById('player-grid');
+    if (!grid) return;
+
+    const items = Array.from(grid.querySelectorAll('.item:not(.dragging)'));
+    items.forEach((el) => {
+        const haystack = [
+            el.dataset.name || '',
+            el.dataset.label || '',
+            el.dataset.description || '',
+            el.getAttribute('title') || '',
+        ].join(' ').toLowerCase();
+
+        const match = !q || haystack.includes(q);
+        el.style.display = match ? '' : 'none';
+        el.style.pointerEvents = match ? 'auto' : 'none';
+        el.style.opacity = match ? '' : '0';
+    });
+}
+
+function clearSortLocks() {
+    const grid = document.getElementById('player-grid');
+    if (!grid) return;
+    grid.querySelectorAll('.item[data-sort-locked="true"]').forEach((el) => {
+        delete el.dataset.sortLocked;
+    });
+}
+
+function markLockedSortItemsFromHotkeys() {
+    const grid = document.getElementById('player-grid');
+    if (!grid) return;
+    clearSortLocks();
+
+    const mapping = window.hotkeyMapping || [];
+    for (let slotNum = 1; slotNum <= 6; slotNum++) {
+        const m = mapping[slotNum];
+        if (!m || m.type !== 'item' || !m.item) continue;
+        const slotStr = String(m.item.slot);
+        const itemEl =
+            grid.querySelector(`.item[data-slot="${CSS.escape(slotStr)}"]`)
+            || grid.querySelector(`.item[data-x="${m.col}"][data-y="${m.row}"]`);
+        if (itemEl) {
+            itemEl.dataset.sortLocked = 'true';
+        }
+    }
+}
+
+function getItemRarityRankFromEl(el) {
+    const rank = { common: 0, uncommon: 1, rare: 2, epic: 3, legendary: 4, mythic: 5 };
+    for (const key in rank) {
+        if (el.classList.contains('rarity-' + key)) return rank[key];
+    }
+    return 0;
+}
+
+function getItemWeightFromEl(el) {
+    const w = el.querySelector('.item-weight');
+    if (!w) return 0;
+    const value = parseFloat(String(w.textContent || '').replace(/[^\d.]/g, ''));
+    return Number.isFinite(value) ? value : 0;
+}
+
+function getItemLabelFromEl(el) {
+    const label = el.dataset.label || el.dataset.name || '';
+    return String(label).toLowerCase();
+}
+
+function restoreGridPositionsFallback() {
+    const grid = document.getElementById('player-grid');
+    if (!grid) return;
+    const step = CONFIG.cellSize + CONFIG.gapSize;
+    grid.querySelectorAll('.item').forEach((el) => {
+        const x = parseInt(el.dataset.x, 10) || 1;
+        const y = parseInt(el.dataset.y, 10) || 1;
+        el.style.left = ((x - 1) * step) + 'px';
+        el.style.top = ((y - 1) * step) + 'px';
+        if (el.style.display === 'none') el.style.display = '';
+        el.classList.remove('sort-moved');
+    });
+}
+
+function packDomItemsFallback(sortedEls) {
+    const grid = document.getElementById('player-grid');
+    if (!grid) return;
+    const step = CONFIG.cellSize + CONFIG.gapSize;
+    const occ = new Set();
+
+    const fits = (c, r, w, h) => {
+        if (c + w - 1 > CONFIG.gridCols || r + h - 1 > CONFIG.gridRows) return false;
+        for (let dr = 0; dr < h; dr++) {
+            for (let dc = 0; dc < w; dc++) {
+                if (occ.has((c + dc) + ',' + (r + dr))) return false;
+            }
+        }
+        return true;
+    };
+
+    const occupy = (c, r, w, h) => {
+        for (let dr = 0; dr < h; dr++) {
+            for (let dc = 0; dc < w; dc++) {
+                occ.add((c + dc) + ',' + (r + dr));
+            }
+        }
+    };
+
+    // Pre-occupy locked items so sorted items never overlap them
+    const lockedEls = Array.from(grid.querySelectorAll('.item[data-sort-locked="true"]'));
+    lockedEls.forEach((el) => {
+        const x = parseInt(el.dataset.x, 10) || 1;
+        const y = parseInt(el.dataset.y, 10) || 1;
+        const w = Math.max(1, Math.round((parseInt(el.style.width, 10) + CONFIG.gapSize) / step));
+        const h = Math.max(1, Math.round((parseInt(el.style.height, 10) + CONFIG.gapSize) / step));
+        occupy(x, y, w, h);
+    });
+
+    sortedEls.forEach((el) => {
+        const w = Math.max(1, Math.round((parseInt(el.style.width, 10) + CONFIG.gapSize) / step));
+        const h = Math.max(1, Math.round((parseInt(el.style.height, 10) + CONFIG.gapSize) / step));
+
+        let placed = false;
+        outer:
+        for (let row = 1; row <= CONFIG.gridRows; row++) {
+            for (let col = 1; col <= CONFIG.gridCols; col++) {
+                if (fits(col, row, w, h)) {
+                    occupy(col, row, w, h);
+                    el.style.left = ((col - 1) * step) + 'px';
+                    el.style.top = ((row - 1) * step) + 'px';
+                    el.dataset.x = String(col);
+                    el.dataset.y = String(row);
+                    el.classList.add('sort-moved');
+                    placed = true;
+                    break outer;
+                }
+            }
+        }
+        if (!placed) el.style.display = 'none';
+    });
+}
+
+function persistCompactLayoutToServer() {
+    const grid = document.getElementById('player-grid');
+    if (!grid) return;
+
+    // Only persist non-locked items; hotbar 1-6 are locked.
+    const els = Array.from(grid.querySelectorAll('.item'))
+        .filter((el) => el.dataset.sortLocked !== 'true');
+
+    const positions = els.map((el) => {
+        const slotId = el.dataset.slot;
+        const x = parseInt(el.dataset.x, 10) || 1;
+        const y = parseInt(el.dataset.y, 10) || 1;
+        return { slotId, x, y };
+    }).filter((p) => p.slotId != null);
+
+    if (!positions.length) return;
+
+    fetch(`https://${GetParentResourceName()}/compactInventory`, {
+        method: 'POST',
+        body: JSON.stringify({ positions })
+    }).catch(() => {});
+}
+
+function applySortFallback(mode) {
+    window.__invSortMode = mode || 'default';
+    const grid = document.getElementById('player-grid');
+    if (!grid) return;
+
+    if (mode === 'default') {
+        // "Grip" = compact/rapihin layout (pack items into earliest free slots).
+        // Hotbar/quickslot 1-6 items are locked and must not move.
+        markLockedSortItemsFromHotkeys();
+
+        const els = Array.from(grid.querySelectorAll('.item:not(.dragging)'))
+            .filter((el) => el.dataset.sortLocked !== 'true');
+
+        packDomItemsFallback(els);
+        return;
+    }
+
+    markLockedSortItemsFromHotkeys();
+
+    const els = Array.from(grid.querySelectorAll('.item:not(.dragging)'))
+        .filter((el) => el.style.display !== 'none')
+        .filter((el) => el.dataset.sortLocked !== 'true');
+    els.sort((a, b) => {
+        switch (mode) {
+            case 'name':
+                return getItemLabelFromEl(a).localeCompare(getItemLabelFromEl(b));
+            case 'weight+':
+                return getItemWeightFromEl(a) - getItemWeightFromEl(b);
+            case 'weight-':
+                return getItemWeightFromEl(b) - getItemWeightFromEl(a);
+            case 'rarity':
+                return getItemRarityRankFromEl(b) - getItemRarityRankFromEl(a);
+            default:
+                return 0;
+        }
+    });
+
+    packDomItemsFallback(els);
+}
+
+function wireSearchFallback() {
+    const input = document.getElementById('inv-search-input');
+    const clearBtn = document.getElementById('inv-search-clear');
+    if (!input || !clearBtn) return;
+
+    // Avoid double-wiring if inventory opens multiple times
+    if (wireSearchFallback._wired) return;
+    wireSearchFallback._wired = true;
+
+    input.addEventListener('input', () => {
+        const q = input.value || '';
+        window.__invSearchQuery = String(q).trim().toLowerCase();
+        clearBtn.classList.toggle('hidden', !String(q).trim());
+
+        if (typeof window.applyInventoryFilter === 'function') {
+            window.applyInventoryFilter();
+        } else {
+            applySearchFallback(q);
+        }
+
+        // If sort mode is active, keep layout sorted after filtering
+        const mode = window.__invSortMode || 'default';
+        if (mode !== 'default') {
+            requestAnimationFrame(() => applySortFallback(mode));
+        }
+    });
+
+    clearBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        input.value = '';
+        clearBtn.classList.add('hidden');
+        if (typeof window.resetInventoryFilter === 'function') {
+            window.resetInventoryFilter();
+        } else {
+            applySearchFallback('');
+            renderItems();
+        }
+    });
+}
+
+function wireSortFallback() {
+    const buttons = Array.from(document.querySelectorAll('.inv-sort-btn'));
+    if (!buttons.length) return;
+    if (wireSortFallback._wired) return;
+    wireSortFallback._wired = true;
+
+    buttons.forEach((btn) => {
+        // Capture phase + stopImmediatePropagation so other scripts can't "fight" this handler.
+        btn.addEventListener('click', (e) => {
+            // Let external inventory-filter.js handle it if present, but always run fallback too
+            // so "sort not working" cases still work.
+            e.preventDefault();
+            e.stopPropagation();
+            if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+
+            const mode = btn.dataset.sort || 'default';
+            buttons.forEach((b) => b.classList.remove('active'));
+            btn.classList.add('active');
+
+            applySortFallback(mode);
+            if (mode === 'default') {
+                // Persist compact layout to server.
+                // Delay one frame to ensure dataset x/y updated by pack.
+                requestAnimationFrame(persistCompactLayoutToServer);
+            }
+        }, true);
+    });
+}
+
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
         e.preventDefault();
@@ -140,7 +505,7 @@ document.addEventListener('keydown', (e) => {
 });
 
 document.addEventListener('click', (e) => {
-    if (!contextMenu.contains(e.target)) {
+    if (!contextMenu.contains(e.target) && !playersSubmenu.contains(e.target)) {
         hideContextMenu();
     }
 });
@@ -188,6 +553,9 @@ function openInventory(data) {
     updateWeightBar(data.weight || 0, data.maxWeight || 200);
     renderItems();
     renderGroundItems();
+    updateItemInfo(null);
+    wireSearchFallback();
+    wireSortFallback();
     container.classList.remove('hidden');
 }
 
@@ -203,6 +571,10 @@ function updateInventory(data) {
 
     updateWeightBar(data.weight || 0, data.maxWeight || 200);
     renderItems();
+    // [FIX-SORT-3] Re-apply filter/sort after update
+    if (typeof window.applyInventoryFilter === 'function') {
+        requestAnimationFrame(window.applyInventoryFilter);
+    }
 }
 
 function updateGroundItems(items) {
@@ -267,6 +639,17 @@ function renderItems() {
     playerGrid.appendChild(frag);
 
     assignHotkeysToSlots(inventoryData.items);
+
+    // Re-apply search/sort after fresh render (prevents "berantakan" after any update)
+    requestAnimationFrame(() => {
+        const q = window.__invSearchQuery || '';
+        if (q) applySearchFallback(q);
+
+        const mode = window.__invSortMode || 'default';
+        if (mode && mode !== 'default') {
+            applySortFallback(mode);
+        }
+    });
 }
 
 function assignHotkeysToSlots(items) {
@@ -328,6 +711,9 @@ function assignHotkeysToSlots(items) {
 
     window.hotkeyMapping = hotkeyMapping;
     syncHotbarWithInventory(hotkeyMapping);
+
+    // Keep sort-locks up to date after mapping changes
+    markLockedSortItemsFromHotkeys();
 }
 
 function syncHotbarWithInventory(hotkeyMapping) {
@@ -493,7 +879,7 @@ function createShopCard(item) {
 }
 
 function createItemElement(item, source, quickslotNum) {
-    const itemDef = itemsData[item.name] || { size: { w: 1, h: 1 }, label: item.name, weight: 0 };
+    const itemDef = resolveItemDefinition(item.name);
     const displaySize = item.isShopItem && item.displaySize ? item.displaySize : (itemDef.size || { w: 1, h: 1 });
     const w = displaySize.w || 1;
     const h = displaySize.h || 1;
@@ -577,20 +963,54 @@ function createItemElement(item, source, quickslotNum) {
     nameEl.className = 'item-name';
     nameEl.textContent = itemDef.label || item.name;
     fragment.appendChild(nameEl);
+
+    // [FIX-META] Render item metadata badges (ammo, durability, serial, etc.)
+    const meta = item.metadata || {};
+    const metaBadges = [];
+    if (meta.ammo !== undefined && meta.ammo !== null) {
+        metaBadges.push({ icon: 'fa-circle-dot', value: meta.ammo, cls: 'meta-ammo', title: 'Ammo: ' + meta.ammo });
+    }
+    if (meta.durability !== undefined && meta.durability !== null) {
+        const dur = typeof meta.durability === 'number' ? Math.round(meta.durability) + '%' : meta.durability;
+        metaBadges.push({ icon: 'fa-heart', value: dur, cls: 'meta-durability', title: 'Durability: ' + dur });
+    }
+    if (meta.serial) {
+        metaBadges.push({ icon: 'fa-hashtag', value: String(meta.serial).slice(-4), cls: 'meta-serial', title: 'Serial: ' + meta.serial });
+    }
+    if (metaBadges.length > 0) {
+        const metaContainer = document.createElement('div');
+        metaContainer.className = 'item-meta-badges';
+        metaBadges.forEach(function(badge) {
+            const b = document.createElement('span');
+            b.className = 'item-meta-badge ' + badge.cls;
+            b.title = badge.title;
+            b.innerHTML = '<i class="fa-solid ' + badge.icon + '"></i> ' + escapeHtml(String(badge.value));
+            metaContainer.appendChild(b);
+        });
+        fragment.appendChild(metaContainer);
+    }
+
     el.appendChild(fragment);
 
     el.dataset.slot = item.slot;
     el.dataset.name = item.name;
+    el.dataset.label = itemDef.label || item.name;
+    el.dataset.description = item.metadata?.description || itemDef.description || '';
     el.dataset.count = item.count || 1;
     el.dataset.source = source;
     el.dataset.x = x;
     el.dataset.y = y;
+    el.title = [el.dataset.label, el.dataset.description].filter(Boolean).join(' - ');
     if (item.isShopItem) {
         el.dataset.isShopItem = 'true';
         el.dataset.price = item.price || 0;
         el.dataset.currency = item.currency || 'cash';
     }
 
+    if (source === 'player') {
+        el.addEventListener('mouseenter', () => updateItemInfo(item));
+        el.addEventListener('click', () => updateItemInfo(item));
+    }
     el.addEventListener('contextmenu', (e) => showContextMenu(e, item, source, el));
     el.addEventListener('mousedown', (e) => handleDragStart(e, el, item, source));
 
@@ -619,8 +1039,44 @@ function getSlotAtPoint(grid, clientX, clientY) {
     };
 }
 
+function getPlayerDropTarget(clientX, clientY) {
+    if (!playerGrid) return null;
+    const node = document.elementFromPoint(clientX, clientY);
+    if (!node) return null;
+
+    // If we are over an item, merge/move should still work even though items
+    // are absolutely positioned (not inside .slot elements).
+    const itemEl = node.closest ? node.closest('.item') : null;
+    if (itemEl && playerGrid.contains(itemEl)) {
+        const slot = itemEl.dataset.slot;
+        const x = parseInt(itemEl.dataset.x, 10);
+        const y = parseInt(itemEl.dataset.y, 10);
+        if (slot != null && Number.isFinite(x) && Number.isFinite(y)) {
+            return { type: 'item', slot, x, y, el: itemEl };
+        }
+        return { type: 'item', slot, el: itemEl };
+    }
+
+    const slotEl = node.closest ? node.closest('.slot') : null;
+    if (slotEl && playerGrid.contains(slotEl)) {
+        return {
+            type: 'slot',
+            x: parseInt(slotEl.dataset.col, 10),
+            y: parseInt(slotEl.dataset.row, 10),
+            el: slotEl
+        };
+    }
+
+    return null;
+}
+
+function getInventoryItemBySlot(slotId) {
+    const slotStr = String(slotId);
+    return (inventoryData?.items || []).find((it) => String(it.slot) === slotStr) || null;
+}
+
 function getItemSize(item) {
-    const itemDef = itemsData[item.name] || itemsData[item.name?.toLowerCase?.()] || itemsData[item.name?.toUpperCase?.()] || {};
+    const itemDef = resolveItemDefinition(item.name);
     const size = item.displaySize || itemDef.size || { w: 1, h: 1 };
     return {
         w: size.w || 1,
@@ -655,7 +1111,7 @@ function handleDragStart(e, el, item, source) {
     isDragging = true;
     draggedEl = el;
     draggedItem = item;
-    draggedItemDef = itemsData[item.name] || {};
+    draggedItemDef = resolveItemDefinition(item.name);
     dragSource = source;
 
     const rect = el.getBoundingClientRect();
@@ -695,50 +1151,103 @@ function handleDragMove(e) {
     }
 }
 
+// Helper: find item occupying a grid cell (col, row) in a given items array
+function getItemAtCell(items, col, row) {
+    return items.find(it => {
+        const def = resolveItemDefinition(it.name);
+        const w = def.size?.w || 1;
+        const h = def.size?.h || 1;
+        return col >= it.x && col < it.x + w && row >= it.y && row < it.y + h;
+    }) || null;
+}
+
 function handleDragEnd(e) {
     if (!isDragging || !draggedItem) {
         cancelDrag();
         return;
     }
 
-    const playerSlot = getSlotAtPoint(playerGrid, e.clientX, e.clientY);
+    const playerTarget = getPlayerDropTarget(e.clientX, e.clientY);
     const dropSlot = getSlotAtPoint(dropGrid, e.clientX, e.clientY);
     const size = getItemSize(draggedItem);
 
-    if (dragSource === 'player' && playerSlot) {
-        const valid = !checkCollision(playerSlot.x, playerSlot.y, size.w, size.h, inventoryData?.items || [], draggedItem.slot);
-        if (valid) {
-            fetch(`https://${GetParentResourceName()}/moveItem`, {
+    if (dragSource === 'player' && playerTarget) {
+        let targetItem = null;
+        if (playerTarget.type === 'item') {
+            targetItem = getInventoryItemBySlot(playerTarget.slot) || getItemAtCell(inventoryData?.items || [], playerTarget.x || 1, playerTarget.y || 1);
+        } else if (playerTarget.type === 'slot') {
+            targetItem = getItemAtCell(inventoryData?.items || [], playerTarget.x, playerTarget.y);
+        }
+
+        // Same-name item under cursor â†’ merge
+        if (targetItem && canItemsMerge(draggedItem, targetItem)) {
+            fetch(`https://${GetParentResourceName()}/mergeItem`, {
                 method: 'POST',
                 body: JSON.stringify({
-                    slotId: draggedItem.slot,
-                    x: playerSlot.x,
-                    y: playerSlot.y
+                    fromSlot: draggedItem.slot,
+                    toSlot: targetItem.slot
                 })
             }).catch(() => {});
+        } else {
+            if (playerTarget.type === 'slot') {
+                const valid = !checkCollision(playerTarget.x, playerTarget.y, size.w, size.h, inventoryData?.items || [], draggedItem.slot);
+                if (valid) {
+                    fetch(`https://${GetParentResourceName()}/moveItem`, {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            slotId: draggedItem.slot,
+                            x: playerTarget.x,
+                            y: playerTarget.y
+                        })
+                    }).catch(() => {});
+                }
+            }
         }
     } else if (dragSource === 'player' && dropSlot) {
-        fetch(`https://${GetParentResourceName()}/dropItem`, {
-            method: 'POST',
-            body: JSON.stringify({
-                name: draggedItem.name,
-                count: draggedItem.count || 1,
-                slot: draggedItem.slot,
-                x: dropSlot.x,
-                y: dropSlot.y
-            })
-        }).catch(() => {});
-    } else if (dragSource === 'ground' && playerSlot) {
-        const valid = !checkCollision(playerSlot.x, playerSlot.y, size.w, size.h, inventoryData?.items || []);
-        if (valid) {
-            fetch(`https://${GetParentResourceName()}/pickupItem`, {
+        const itemSnap = { ...draggedItem };
+        const slotSnap = { ...dropSlot };
+        if ((itemSnap.count || 1) <= 1) {
+            fetch(`https://${GetParentResourceName()}/dropItem`, {
+                method: 'POST',
+                body: JSON.stringify({
+                    name: itemSnap.name, count: 1,
+                    slot: itemSnap.slot, x: slotSnap.x, y: slotSnap.y
+                })
+            }).catch(() => {});
+        } else {
+            openDropModal(itemSnap, null, (amount) => {
+                fetch(`https://${GetParentResourceName()}/dropItem`, {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        name: itemSnap.name, count: amount,
+                        slot: itemSnap.slot, x: slotSnap.x, y: slotSnap.y
+                    })
+                }).catch(() => {});
+            });
+        }
+    } else if (dragSource === 'ground' && playerTarget && playerTarget.type === 'slot') {
+        // Check merge from ground into same-name player item
+        const targetItem = getItemAtCell(inventoryData?.items || [], playerTarget.x, playerTarget.y);
+        if (canItemsMerge(draggedItem, targetItem)) {
+            fetch(`https://${GetParentResourceName()}/mergeGroundItem`, {
                 method: 'POST',
                 body: JSON.stringify({
                     groundSlot: draggedItem.slot,
-                    x: playerSlot.x,
-                    y: playerSlot.y
+                    toSlot: targetItem.slot
                 })
             }).catch(() => {});
+        } else {
+            const valid = !checkCollision(playerTarget.x, playerTarget.y, size.w, size.h, inventoryData?.items || []);
+            if (valid) {
+                fetch(`https://${GetParentResourceName()}/pickupItem`, {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        groundSlot: draggedItem.slot,
+                        x: playerTarget.x,
+                        y: playerTarget.y
+                    })
+                }).catch(() => {});
+            }
         }
     }
 
@@ -785,10 +1294,257 @@ function hideContextMenu() {
     contextItemElement = null;
 }
 
+// â”€â”€ UNIVERSAL AMOUNT MODAL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Replaces all window.prompt / window.alert for drop, split, give, drag-drop
+(function initAmountModal() {
+    const overlay       = document.getElementById('amount-modal');
+    const modalIcon     = document.getElementById('amount-modal-icon');
+    const modalTitle    = document.getElementById('amount-modal-title');
+    const slider        = document.getElementById('amount-slider');
+    const numInput      = document.getElementById('amount-input');
+    const remainEl      = document.getElementById('amount-remain');
+    const takeEl        = document.getElementById('amount-take');
+    const labelRemain   = document.getElementById('amount-label-remain');
+    const labelTake     = document.getElementById('amount-label-take');
+    const stacksRow     = document.getElementById('amount-stacks-row');
+    const itemNameEl    = document.getElementById('amount-item-name');
+    const itemTotalEl   = document.getElementById('amount-item-total');
+    const itemIconEl    = document.getElementById('amount-item-icon');
+    const btnMinus      = document.getElementById('amount-minus');
+    const btnPlus       = document.getElementById('amount-plus');
+    const btnCancel     = document.getElementById('amount-cancel');
+    const btnConfirm    = document.getElementById('amount-confirm');
+    const confirmIcon   = document.getElementById('amount-confirm-icon');
+    const confirmLabel  = document.getElementById('amount-confirm-label');
+
+    let currentCb  = null;
+    let currentMax = 1;
+    let currentMin = 1;
+
+    function clamp(v) {
+        return Math.max(currentMin, Math.min(currentMax, Math.floor(Number(v)) || currentMin));
+    }
+
+    function syncUI(val) {
+        val = clamp(val);
+        slider.value   = val;
+        numInput.value = val;
+        takeEl.textContent   = val;
+        remainEl.textContent = currentMax + currentMin - val; // total - val for split; max - val + min for others
+        // For non-split modes where "remain" = total - taken:
+        remainEl.textContent = (Number(itemTotalEl.dataset.total) || currentMax) - val;
+    }
+
+    /**
+     * openAmountModal(config)
+     *   config.item        â€” item object { name, label, count, ... }
+     *   config.title       â€” modal header title
+     *   config.icon        â€” fa icon class (e.g. 'fa-solid fa-trash-can')
+     *   config.confirmText â€” confirm button label
+     *   config.confirmIcon â€” fa icon class for confirm btn
+     *   config.min         â€” minimum amount (default 1)
+     *   config.max         â€” maximum amount (default item.count)
+     *   config.defaultVal  â€” initial slider value (default max)
+     *   config.labelRemain â€” left stack label (default 'Sisa')
+     *   config.labelTake   â€” right stack label (default 'Jumlah')
+     *   config.showRemain  â€” show remain stack (default true)
+     *   config.callback(amount) â€” called with chosen amount on confirm
+     */
+    window.openAmountModal = function(config) {
+        const item  = config.item;
+        const total = Number(item?.count) || 1;
+
+        currentMin = Number.isFinite(config.min) ? config.min : 1;
+        currentMax = Number.isFinite(config.max) ? config.max : total;
+        currentCb  = config.callback || null;
+
+        // Header
+        modalIcon.className  = config.icon || 'fa-solid fa-code-branch';
+        modalTitle.textContent = config.title || 'Jumlah';
+
+        // Confirm button
+        confirmIcon.className  = config.confirmIcon || 'fa-solid fa-check';
+        confirmLabel.textContent = config.confirmText || 'Konfirmasi';
+
+        // Labels
+        labelRemain.textContent = config.labelRemain || 'Sisa';
+        labelTake.textContent   = config.labelTake   || 'Jumlah';
+
+        // Show/hide remain stack
+        stacksRow.style.display = (config.showRemain === false) ? 'none' : '';
+
+        // Item preview
+        itemNameEl.textContent = item?.label || item?.name || 'Item';
+        itemTotalEl.textContent = `Total: ${total}`;
+        itemTotalEl.dataset.total = total;
+
+        itemIconEl.innerHTML = '';
+        const img = document.createElement('img');
+        img.src = `images/${(item?.name || '').toLowerCase()}.png`;
+        img.onerror = () => { img.src = 'images/default.png'; };
+        itemIconEl.appendChild(img);
+
+        // Slider range
+        slider.min   = currentMin;
+        slider.max   = currentMax;
+        numInput.min = currentMin;
+        numInput.max = currentMax;
+
+        const defVal = Number.isFinite(config.defaultVal) ? config.defaultVal : currentMax;
+        syncUI(defVal);
+
+        overlay.classList.remove('hidden');
+        numInput.focus();
+        numInput.select();
+    };
+
+    // Convenience wrappers
+    window.openSplitModal = function(item) {
+        const total = item.count || 1;
+        openAmountModal({
+            item,
+            title:       'Split Item',
+            icon:        'fa-solid fa-code-branch',
+            confirmText: 'Split',
+            confirmIcon: 'fa-solid fa-code-branch',
+            min:         1,
+            max:         total - 1,
+            defaultVal:  Math.max(1, Math.floor(total / 2)),
+            labelRemain: 'Sisa',
+            labelTake:   'Dipisah',
+            callback(amount) {
+                fetch(`https://${GetParentResourceName()}/splitItem`, {
+                    method: 'POST',
+                    body: JSON.stringify({ name: item.name, count: amount, slot: item.slot })
+                }).catch(() => {});
+            }
+        });
+    };
+
+    window.openDropModal = function(item, extra, onConfirm) {
+        openAmountModal({
+            item,
+            title:       'Drop Item',
+            icon:        'fa-solid fa-trash-can',
+            confirmText: 'Drop',
+            confirmIcon: 'fa-solid fa-trash-can',
+            min:         1,
+            max:         item.count || 1,
+            defaultVal:  item.count || 1,
+            labelRemain: 'Simpan',
+            labelTake:   'Dibuang',
+            callback(amount) { onConfirm(amount); }
+        });
+    };
+
+    window.openGiveModal = function(item, onConfirm) {
+        openAmountModal({
+            item,
+            title:       'Give Item',
+            icon:        'fa-solid fa-gift',
+            confirmText: 'Give',
+            confirmIcon: 'fa-solid fa-gift',
+            min:         1,
+            max:         item.count || 1,
+            defaultVal:  item.count || 1,
+            labelRemain: 'Simpan',
+            labelTake:   'Diberikan',
+            callback(amount) { onConfirm(amount); }
+        });
+    };
+
+    // â”€â”€ Internal UI wiring â”€â”€
+    function doCancel() {
+        overlay.classList.add('hidden');
+        currentCb = null;
+    }
+
+    function doConfirm() {
+        const amount = clamp(slider.value);
+        overlay.classList.add('hidden');
+        if (currentCb) currentCb(amount);
+        currentCb = null;
+    }
+
+    slider.addEventListener('input', () => syncUI(slider.value));
+
+    numInput.addEventListener('input', () => syncUI(numInput.value));
+    numInput.addEventListener('change', () => syncUI(numInput.value));
+    numInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter')  { e.preventDefault(); doConfirm(); }
+        if (e.key === 'Escape') { e.preventDefault(); doCancel(); }
+    });
+
+    btnMinus.addEventListener('click', () => syncUI(Number(slider.value) - 1));
+    btnPlus.addEventListener('click',  () => syncUI(Number(slider.value) + 1));
+    btnCancel.addEventListener('click', doCancel);
+    btnConfirm.addEventListener('click', doConfirm);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) doCancel(); });
+})();
+
+// Wire up context menu option clicks (Use, Drop, Give)
+contextMenu.querySelectorAll('.menu-option').forEach(option => {
+    option.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+
+        const action = option.dataset.action;
+
+        if (action === 'use') {
+            if (!selectedItem) return;
+            fetch(`https://${GetParentResourceName()}/useItem`, {
+                method: 'POST',
+                body: JSON.stringify({
+                    name: selectedItem.name,
+                    slot: selectedItem.slot
+                })
+            }).catch(() => {});
+            hideContextMenu();
+
+        } else if (action === 'split') {
+            if (!selectedItem) return;
+            if ((selectedItem.count || 1) <= 1) {
+                // Tidak bisa split, abaikan saja (tidak pakai alert)
+                hideContextMenu();
+                return;
+            }
+            openSplitModal(selectedItem);
+            hideContextMenu();
+
+        } else if (action === 'drop') {
+            if (!selectedItem) return;
+            const itemSnap = { ...selectedItem };
+            hideContextMenu();
+            if ((itemSnap.count || 1) <= 1) {
+                fetch(`https://${GetParentResourceName()}/dropItem`, {
+                    method: 'POST',
+                    body: JSON.stringify({ name: itemSnap.name, count: 1, slot: itemSnap.slot })
+                }).catch(() => {});
+                return;
+            }
+            openDropModal(itemSnap, null, (amount) => {
+                fetch(`https://${GetParentResourceName()}/dropItem`, {
+                    method: 'POST',
+                    body: JSON.stringify({ name: itemSnap.name, count: amount, slot: itemSnap.slot })
+                }).catch(() => {});
+            });
+
+        } else if (action === 'give') {
+            // Posisikan submenu di sebelah kanan context menu (fixed positioning)
+            const menuRect = contextMenu.getBoundingClientRect();
+            playersSubmenu.style.left = (menuRect.right + 4) + 'px';
+            playersSubmenu.style.top  = menuRect.top + 'px';
+            // Toggle submenu tanpa menutup context menu (selectedItem tetap ada)
+            playersSubmenu.classList.toggle('hidden');
+        }
+    });
+});
+
 function updateNearbyPlayers(players) {
     nearbyPlayers = players || [];
     renderPlayersList();
 }
+
 
 function renderPlayersList() {
     playersList.innerHTML = '';
@@ -823,21 +1579,27 @@ function renderPlayersList() {
 
 function giveItemToPlayer(playerId) {
     if (!selectedItem) return;
-
-    console.log('[INVENTORY-JS] Giving item to player:', playerId, selectedItem.name);
+    const itemSnap = { ...selectedItem };
     hideContextMenu();
 
-    fetch(`https://${GetParentResourceName()}/giveItem`, {
-        method: 'POST',
-        body: JSON.stringify({
-            name: selectedItem.name,
-            count: selectedItem.count,
-            slot: selectedItem.slot,
-            targetPlayer: playerId
-        })
-    });
+    const doGive = (amount) => {
+        console.log('[INVENTORY-JS] Giving item to player:', playerId, itemSnap.name);
+        fetch(`https://${GetParentResourceName()}/giveItem`, {
+            method: 'POST',
+            body: JSON.stringify({
+                name:         itemSnap.name,
+                count:        amount,
+                slot:         itemSnap.slot,
+                targetPlayer: playerId
+            })
+        });
+    };
 
-    hideContextMenu();
+    if ((itemSnap.count || 1) <= 1) {
+        doGive(1);
+        return;
+    }
+    openGiveModal(itemSnap, doGive);
 }
 
 window.addEventListener('message', (event) => {
@@ -880,6 +1642,9 @@ window.addEventListener('message', (event) => {
         case 'closeLootContainer':
             closeLootContainer();
             break;
+        case 'setHotbarVisible':
+            setHotbarVisible(data.visible);
+            break;
     }
 });
 
@@ -893,11 +1658,17 @@ function forceClose() {
     }
     hideContextMenu();
     hideDragPreview();
+    updateItemInfo(null);
     if (isDragging) cancelDrag();
 }
 
 const hotbarContainer = document.getElementById('hotbar-container');
 let hotbarData = {};
+
+function setHotbarVisible(visible) {
+    if (!hotbarContainer) return;
+    hotbarContainer.classList.toggle('hidden', visible === false);
+}
 
 function setupHotbarDragAndDrop() {
     const hotbarSlots = document.querySelectorAll('.hotbar-slot');
@@ -1194,4 +1965,3 @@ function closeLootContainer() {
     dropHint.classList.remove('hidden');
     dropIcon.className = 'fa-solid fa-arrow-down hex-inner-icon';
 }
-
