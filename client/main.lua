@@ -1,8 +1,3 @@
---[[
-    COREX Inventory - Client Side (v2.0)
-    Uses COREX Framework with Player Bridge API
-]]
-
 local function DebugPrint(msg)
     if Config and Config.Debug then
         print(msg)
@@ -44,6 +39,7 @@ end
 
 local isOpen = false
 local isShopOpen = false
+local isStashOpen = false
 local hotbarVisible = true
 local currentShop = nil
 local currentShopType = nil
@@ -350,8 +346,9 @@ end
 local function OpenInventory(data)
     if isOpen then return end
     isOpen = true
+    isStashOpen = data.isStash == true
 
-    if not data.isShop and not data.isContainer then
+    if not data.isShop and not data.isContainer and not data.isStash then
         data.groundItems = GetNearbyGroundItems()
     end
 
@@ -402,6 +399,7 @@ local function CloseInventory()
 
     isOpen = false
     isShopOpen = false
+    isStashOpen = false
     currentShop = nil
     currentShopType = nil
 
@@ -415,6 +413,7 @@ end
 local function UpdateGroundItemsUI()
     if not isOpen then return end
     if isShopOpen then return end
+    if isStashOpen then return end
 
     SendNUIMessage({
         action = 'updateGround',
@@ -462,9 +461,22 @@ end)
 
 RegisterNetEvent('corex-inventory:client:update', function(data)
     if isOpen then
-        if not isShopOpen then
+        if isStashOpen and not data.isStash then
+            return
+        end
+        if not isShopOpen and not data.isStash then
             data.groundItems = GetNearbyGroundItems()
         end
+        SendNUIMessage({
+            action = 'update',
+            inventory = data
+        })
+    end
+end)
+
+RegisterNetEvent('corex-inventory:client:updateStash', function(data)
+    if isOpen and isStashOpen then
+        data.isStash = true
         SendNUIMessage({
             action = 'update',
             inventory = data
@@ -596,6 +608,34 @@ RegisterNUICallback('pickupItem', function(data, cb)
         local x = math.max(1, math.min(8, math.floor(tonumber(data.x) or 1)))
         local y = math.max(1, math.min(10, math.floor(tonumber(data.y) or 1)))
         TriggerServerEvent('corex-inventory:server:pickup', data.groundSlot, x, y)
+    end
+    cb('ok')
+end)
+
+RegisterNUICallback('stashDepositItem', function(data, cb)
+    if data.stashId and data.slot then
+        local x = math.max(1, math.min(8, math.floor(tonumber(data.x) or 1)))
+        local y = math.max(1, math.min(10, math.floor(tonumber(data.y) or 1)))
+        local stashId = tostring(data.stashId)
+        if stashId:sub(1, 8) == 'vehitem:' then
+            TriggerServerEvent('xian_vehitems:trunk:deposit', stashId, data.slot, data.count or 1, x, y)
+        else
+            TriggerServerEvent('xian_modules:stash:deposit', stashId, data.slot, data.count or 1, x, y)
+        end
+    end
+    cb('ok')
+end)
+
+RegisterNUICallback('stashWithdrawItem', function(data, cb)
+    if data.stashId and data.stashSlot then
+        local x = math.max(1, math.min(8, math.floor(tonumber(data.x) or 1)))
+        local y = math.max(1, math.min(10, math.floor(tonumber(data.y) or 1)))
+        local stashId = tostring(data.stashId)
+        if stashId:sub(1, 8) == 'vehitem:' then
+            TriggerServerEvent('xian_vehitems:trunk:withdraw', stashId, data.stashSlot, data.count or 1, x, y)
+        else
+            TriggerServerEvent('xian_modules:stash:withdraw', stashId, data.stashSlot, data.count or 1, x, y)
+        end
     end
     cb('ok')
 end)
