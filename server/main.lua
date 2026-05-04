@@ -1,17 +1,3 @@
---[[
-    COREX Inventory - Server Side (v2.1 - BUGFIX)
-    Tetris Grid System with Ground Items Support
-    Functional Lua | No OOP | Zombie Survival Optimized
-
-    CHANGELOG v2.1:
-    [FIX-1] AddItem: partial stacking + maxStack respected everywhere
-    [FIX-2] PickupItem: tries to merge into existing stack before placing new slot
-    [FIX-3] GiveItem: tries to merge into existing target stack before placing new slot
-    [FIX-4] mergeItem / mergeGroundItem: already correct, kept as-is
-    [FIX-5] RemoveItem: drains across multiple stacks (partial remove)
-    [SEC-1]  All NetEvent inputs strictly validated
-]]
-
 local Inventories = {}
 local DroppedItems = {}
 local PendingVehiclePurchases = {}
@@ -208,8 +194,71 @@ CreateThread(function()
     end)
 end)
 
+local CalculateWeight
+
 local function GetItemData(itemName)
     return Items[itemName] or Weapons[itemName] or Ammo[itemName]
+end
+
+local function ApplyDecayToItem(item)
+    if type(item) ~= 'table' or type(item.name) ~= 'string' then
+        return true, false
+    end
+
+    local data = GetItemData(item.name)
+    if not data or not data.degrade then
+        return true, false
+    end
+
+    item.metadata = ShallowCopy(item.metadata)
+
+    local now = os.time()
+    local duration = math.max(1, math.floor((tonumber(item.metadata.degradeDuration) or tonumber(data.degrade) or 0) * 60))
+    if not item.metadata.degrade then
+        item.metadata.degrade = now + duration
+        item.metadata.degradeStarted = now
+        item.metadata.degradeDuration = duration / 60
+    end
+
+    local expiresAt = tonumber(item.metadata.degrade) or now
+    local startedAt = tonumber(item.metadata.degradeStarted) or (expiresAt - duration)
+    local total = math.max(1, expiresAt - startedAt)
+    local remaining = math.max(0, expiresAt - now)
+    local durability = math.max(0, math.min(100, (remaining / total) * 100))
+    item.metadata.durability = math.floor(durability + 0.5)
+
+    if data.decay == true and item.metadata.durability <= 0 then
+        return false, true
+    end
+
+    return true, true
+end
+
+local function ApplyDecayToItems(items)
+    local changed = false
+    for index = #(items or {}), 1, -1 do
+        local keep, itemChanged = ApplyDecayToItem(items[index])
+        if itemChanged then
+            changed = true
+        end
+        if not keep then
+            table.remove(items, index)
+            changed = true
+        end
+    end
+    return changed
+end
+
+local function ApplyDecayToInventory(src)
+    local inv = Inventories[src]
+    if not inv or not inv.items then return false end
+
+    local changed = ApplyDecayToItems(inv.items)
+    if changed then
+        inv.weight = CalculateWeight(inv.items)
+    end
+
+    return changed
 end
 
 local function GetWeaponDefinition(itemName)
@@ -228,9 +277,19 @@ end
 local function EnsureItemMetadata(itemName, metadata)
     local safeMetadata = ShallowCopy(metadata)
     local weaponDef = GetWeaponDefinition(itemName)
+    local itemDef = GetItemData(itemName)
 
     if weaponDef and weaponDef.ammoType and safeMetadata.ammo == nil then
         safeMetadata.ammo = 0
+    end
+
+    if itemDef and itemDef.degrade and not safeMetadata.degrade then
+        local now = os.time()
+        local duration = math.max(1, math.floor((tonumber(itemDef.degrade) or 0) * 60))
+        safeMetadata.degrade = now + duration
+        safeMetadata.degradeStarted = now
+        safeMetadata.degradeDuration = tonumber(itemDef.degrade)
+        safeMetadata.durability = 100
     end
 
     return safeMetadata
@@ -258,6 +317,8 @@ local function FindInventoryItem(inv, itemName, slotId)
 
     return nil
 end
+
+local AddItem, RemoveItem  -- forward declarations used by currency/shop helpers
 
 local function GetInventoryItemCount(inv, itemName)
     if not inv or not inv.items or type(itemName) ~= 'string' then
@@ -322,8 +383,6 @@ local function RefundCurrency(src, currency, amount)
     return ok and added
 end
 
-local AddItem  -- forward declaration (defined later in this file)
-
 local function MigrateLegacyCashToItem(src)
     local inv = Inventories[src]
     if not inv then return end
@@ -360,7 +419,7 @@ local function SameItemName(a, b)
     return string.lower(a) == string.lower(b)
 end
 
-local function CalculateWeight(items)
+CalculateWeight = function(items)
     local weight = 0.0
     for _, item in ipairs(items) do
         local data = GetItemData(item.name)
@@ -782,6 +841,9 @@ AddItem = function(src, itemName, count, metadata, x, y)
 
     local inv = Inventories[src]
     if not inv then return false, 'No inventory' end
+    if ApplyDecayToInventory(src) then
+        SaveInventory(src)
+    end
 
     local data = GetItemData(itemName)
     if not data then return false, 'Item not found' end
@@ -902,10 +964,13 @@ end
 -- Previously only removed from the first matching slot.
 -- Now drains stacks until 'count' is satisfied.
 -- ============================================================
-local function RemoveItem(src, itemName, count)
+RemoveItem = function(src, itemName, count)
     count = count or 1
     local inv = Inventories[src]
     if not inv then return false end
+    if ApplyDecayToInventory(src) then
+        SaveInventory(src)
+    end
 
     local remaining = count
     local toRemove  = {}
@@ -945,6 +1010,132 @@ local function RemoveItem(src, itemName, count)
     return true
 end
 
+local function RemoveItemFromSlot(src, slotId, count)
+    count = math.floor(tonumber(count) or 1)
+    if count < 1 then return false, 'Invalid amount' end
+
+    local inv = Inventories[src]
+    if not inv then return false, 'No inventory' end
+    if ApplyDecayToInventory(src) then
+        SaveInventory(src)
+    end
+
+    local wantedSlot = tostring(slotId)
+    local item, index = nil, nil
+    for i, invItem in ipairs(inv.items) do
+        if tostring(invItem.slot) == wantedSlot then
+            item = invItem
+            index = i
+            break
+        end
+    end
+
+    if not item then return false, 'Item not found' end
+    if (tonumber(item.count) or 0) < count then return false, 'Not enough items' end
+
+    local removed = {
+        name = item.name,
+        count = count,
+        metadata = ShallowCopy(item.metadata or {}),
+    }
+
+    item.count = item.count - count
+    if item.count <= 0 then
+        table.remove(inv.items, index)
+    end
+
+    inv.weight = CalculateWeight(inv.items)
+    SaveInventory(src)
+    TriggerClientEvent('corex-inventory:client:update', src, inv)
+
+    return true, removed
+end
+
+local function AddItemStack(src, itemData, x, y)
+    if type(itemData) ~= 'table' or type(itemData.name) ~= 'string' then
+        return false, 'Invalid item'
+    end
+
+    local count = math.floor(tonumber(itemData.count) or 1)
+    if count < 1 then return false, 'Invalid amount' end
+
+    local inv = Inventories[src]
+    if not inv then return false, 'No inventory' end
+    if ApplyDecayToInventory(src) then
+        SaveInventory(src)
+    end
+
+    local data = GetItemData(itemData.name)
+    if not data then return false, 'Item not found' end
+
+    local addWeight = data.weight * count
+    if inv.weight + addWeight > inv.maxWeight then
+        return false, 'Too heavy'
+    end
+
+    local metadata = EnsureItemMetadata(itemData.name, itemData.metadata or {})
+    local remaining = count
+    local maxStack = data.stackable and (data.maxStack or 99999) or 1
+    local placements = {}
+    local function clearReservations()
+        for _ = #placements, 1, -1 do
+            table.remove(inv.items)
+        end
+    end
+
+    while remaining > 0 do
+        local batch = data.stackable and math.min(remaining, maxStack) or 1
+        local pos
+
+        if #placements == 0 and x and y then
+            local w = data.size and data.size.w or 1
+            local h = data.size and data.size.h or 1
+            if IsSpotFree(inv, x, y, w, h) then
+                pos = { x = x, y = y }
+            end
+        end
+
+        if not pos then
+            pos = FindFreeSpot(inv, itemData.name)
+        end
+
+        if not pos then
+            clearReservations()
+            return false, 'No space'
+        end
+
+        placements[#placements + 1] = { x = pos.x, y = pos.y, count = batch }
+        inv.items[#inv.items + 1] = {
+            name = itemData.name,
+            count = batch,
+            x = pos.x,
+            y = pos.y,
+            slot = '__reserved_' .. #placements,
+            metadata = ShallowCopy(metadata),
+        }
+        remaining = remaining - batch
+    end
+
+    clearReservations()
+
+    for _, placement in ipairs(placements) do
+        inv.items[#inv.items + 1] = {
+            name = itemData.name,
+            count = placement.count,
+            x = placement.x,
+            y = placement.y,
+            slot = NextSlotId(),
+            metadata = ShallowCopy(metadata),
+        }
+    end
+
+    inv.weight = CalculateWeight(inv.items)
+    SaveInventory(src)
+    TriggerClientEvent('corex-inventory:client:update', src, inv)
+
+    return true
+end
+
 RegisterNetEvent('corex-inventory:server:load', function()
     LoadInventory(source)
 end)
@@ -958,6 +1149,9 @@ RegisterNetEvent('corex-inventory:server:open', function()
     local inv = Inventories[src]
 
     if inv then
+        if ApplyDecayToInventory(src) then
+            SaveInventory(src)
+        end
         local allItems = GetAllItemsData()
 
         TriggerClientEvent('corex-inventory:client:open', src, {
@@ -1119,6 +1313,9 @@ RegisterNetEvent('corex-inventory:server:use', function(itemName, slotId)
     if type(itemName) ~= 'string' then return end
     local inv = Inventories[src]
     if not inv then return end
+    if ApplyDecayToInventory(src) then
+        SaveInventory(src)
+    end
 
     local itemData = {}
     local item = FindInventoryItem(inv, itemName, slotId)
@@ -1791,11 +1988,19 @@ exports('GetAmmoCatalog',   function() return Ammo    or {} end)
 exports('GetFullCatalog',   GetAllItemsData)
 exports('AddItem',          AddItem)
 exports('RemoveItem',       RemoveItem)
-exports('GetInventory',     function(src) return Inventories[src] end)
+exports('AddItemStack',      AddItemStack)
+exports('RemoveItemFromSlot', RemoveItemFromSlot)
+exports('GetInventory',     function(src)
+    if ApplyDecayToInventory(src) then
+        SaveInventory(src)
+    end
+    return Inventories[src]
+end)
 exports('DropItem',         DropItem)
 exports('PickupItem',       PickupItem)
 exports('UpdateItemMeta',   UpdateItemMeta)
 exports('GetItemMeta',      GetItemMeta)
+exports('ApplyDecayToItems', ApplyDecayToItems)
 exports('HasItem', function(src, itemName, count)
     count = count or 1
     local inv = Inventories[src]
