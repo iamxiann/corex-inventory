@@ -106,6 +106,7 @@ function updateItemInfo(item) {
     if (!item) {
         itemInfoTitle.textContent = 'Item Info';
         itemInfoRarity.textContent = 'Select an item';
+        itemInfoRarity.className = 'item-info-rarity';
         itemInfoMeta.textContent = 'Hover or click an item to see details.';
         itemInfoDesc.textContent = 'Item description and metadata will appear here.';
         return;
@@ -121,6 +122,7 @@ function updateItemInfo(item) {
 
     itemInfoTitle.textContent = itemDef.label || item.name;
     itemInfoRarity.textContent = rarity.toUpperCase();
+    itemInfoRarity.className = `item-info-rarity rarity-text-${rarity}`;
     itemInfoMeta.textContent = formatItemDetails(item, itemDef);
     itemInfoDesc.textContent = description;
 }
@@ -541,6 +543,12 @@ function openInventory(data) {
         shopMoney.classList.remove('hidden');
         playerMoneySpan.textContent = '$' + (data.playerMoney || 0);
         dropGrid.classList.add('is-shop');
+    } else if (data.isStash) {
+        dropTitle.textContent = data.stashName || 'Storage';
+        dropIcon.className = 'fa-solid fa-box-archive hex-inner-icon';
+        dropHint.classList.add('hidden');
+        shopMoney.classList.add('hidden');
+        dropGrid.classList.remove('is-shop');
     } else {
         dropTitle.textContent = 'Ground';
         dropIcon.className = 'fa-solid fa-arrow-down hex-inner-icon';
@@ -562,6 +570,7 @@ function openInventory(data) {
 function updateInventory(data) {
     inventoryData = data;
     if (data.itemsData) itemsData = data.itemsData;
+    if (data.groundItems) groundItems = data.groundItems;
 
     // Store items globally so hotbar can update even when inventory is closed
     if (data && data.items) {
@@ -571,6 +580,7 @@ function updateInventory(data) {
 
     updateWeightBar(data.weight || 0, data.maxWeight || 200);
     renderItems();
+    renderGroundItems();
     // [FIX-SORT-3] Re-apply filter/sort after update
     if (typeof window.applyInventoryFilter === 'function') {
         requestAnimationFrame(window.applyInventoryFilter);
@@ -893,7 +903,8 @@ function createItemElement(item, source, quickslotNum) {
         uncommon: 'UNCOMMON',
         rare: 'RARE',
         epic: 'EPIC',
-        legendary: 'LEGENDARY'
+        legendary: 'LEGENDARY',
+        mythic: 'MYTHIC'
     }[rarity] || 'COMMON';
 
     const el = document.createElement('div');
@@ -1145,7 +1156,9 @@ function handleDragMove(e) {
         const valid = !checkCollision(playerSlot.x, playerSlot.y, size.w, size.h, inventoryData?.items || []);
         showDragPreviewAt(playerSlot, draggedItem, valid, false);
     } else if (dragSource === 'player' && dropSlot) {
-        showDragPreviewAt(dropSlot, draggedItem, true, true);
+        const valid = !(inventoryData && inventoryData.isStash)
+            || !checkCollision(dropSlot.x, dropSlot.y, size.w, size.h, inventoryData?.groundItems || []);
+        showDragPreviewAt(dropSlot, draggedItem, valid, true);
     } else {
         hideDragPreview();
     }
@@ -1206,6 +1219,31 @@ function handleDragEnd(e) {
     } else if (dragSource === 'player' && dropSlot) {
         const itemSnap = { ...draggedItem };
         const slotSnap = { ...dropSlot };
+        const depositToStash = (amount) => {
+            fetch(`https://${GetParentResourceName()}/stashDepositItem`, {
+                method: 'POST',
+                body: JSON.stringify({
+                    stashId: inventoryData?.stashId,
+                    slot: itemSnap.slot,
+                    count: amount,
+                    x: slotSnap.x,
+                    y: slotSnap.y
+                })
+            }).catch(() => {});
+        };
+        if (inventoryData && inventoryData.isStash) {
+            if (checkCollision(slotSnap.x, slotSnap.y, size.w, size.h, inventoryData?.groundItems || [])) {
+                cancelDrag();
+                return;
+            }
+            if ((itemSnap.count || 1) <= 1) {
+                depositToStash(1);
+            } else {
+                openDropModal(itemSnap, null, depositToStash);
+            }
+            cancelDrag();
+            return;
+        }
         if ((itemSnap.count || 1) <= 1) {
             fetch(`https://${GetParentResourceName()}/dropItem`, {
                 method: 'POST',
@@ -1225,7 +1263,34 @@ function handleDragEnd(e) {
                 }).catch(() => {});
             });
         }
-    } else if (dragSource === 'ground' && playerTarget && playerTarget.type === 'slot') {
+    } else if (dragSource === 'ground' && playerTarget) {
+        if (inventoryData && inventoryData.isStash) {
+            const itemSnap = { ...draggedItem };
+            const targetSnap = { ...playerTarget };
+            const withdrawFromStash = (amount) => {
+                fetch(`https://${GetParentResourceName()}/stashWithdrawItem`, {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        stashId: inventoryData?.stashId,
+                        stashSlot: itemSnap.stashSlot || itemSnap.slot,
+                        count: amount,
+                        x: targetSnap.x,
+                        y: targetSnap.y
+                    })
+                }).catch(() => {});
+            };
+            if ((itemSnap.count || 1) <= 1) {
+                withdrawFromStash(1);
+            } else {
+                openDropModal(itemSnap, null, withdrawFromStash);
+            }
+            cancelDrag();
+            return;
+        }
+        if (playerTarget.type !== 'slot') {
+            cancelDrag();
+            return;
+        }
         // Check merge from ground into same-name player item
         const targetItem = getItemAtCell(inventoryData?.items || [], playerTarget.x, playerTarget.y);
         if (canItemsMerge(draggedItem, targetItem)) {
