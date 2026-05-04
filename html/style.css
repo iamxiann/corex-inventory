@@ -1,8 +1,3 @@
-/* ============================================================
-   LAST SHELTER â€” INVENTORY UI â€” THEME v1.0
-   Post-apocalyptic radioactive wasteland aesthetic
-   ============================================================ */
-
 @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Share+Tech+Mono&display=swap');
 
 :root {
@@ -49,11 +44,11 @@
 
     /* rarity â€” radioactive spectrum */
     --rarity-common: #7a8490;
-    --rarity-uncommon: #39ff14;
-    --rarity-rare: #ffd700;
-    --rarity-epic: #ff8c00;
-    --rarity-legendary: #ffd700;
-    --rarity-mythic: #39ff14;
+    --rarity-uncommon: #34d058;
+    --rarity-rare: #2f81f7;
+    --rarity-epic: #a371f7;
+    --rarity-legendary: #f2cc60;
+    --rarity-mythic: #b3001b;
 
     /* crack pattern SVG (inline data-uri) */
     --crack-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cpath d='M20 0 L22 40 L10 80 L30 120 L15 200' stroke='rgba(255,215,0,0.03)' fill='none' stroke-width='1'/%3E%3Cpath d='M80 0 L85 50 L70 90 L95 140 L80 200' stroke='rgba(255,215,0,0.02)' fill='none' stroke-width='1'/%3E%3Cpath d='M140 0 L135 60 L155 100 L130 160 L145 200' stroke='rgba(255,215,0,0.025)' fill='none' stroke-width='1'/%3E%3Cpath d='M0 50 L50 55 L90 45 L140 60 L200 50' stroke='rgba(255,215,0,0.02)' fill='none' stroke-width='1'/%3E%3Cpath d='M0 130 L60 125 L100 140 L160 128 L200 135' stroke='rgba(255,215,0,0.018)' fill='none' stroke-width='1'/%3E%3C/svg%3E");
@@ -547,18 +542,18 @@ body {
 
 .item.rarity-legendary {
     --rarity-color: var(--rarity-legendary);
-    border-color: rgba(255, 215, 0, 0.4);
+    border-color: rgba(242, 204, 96, 0.45);
     box-shadow:
-        0 0 12px rgba(255, 215, 0, 0.2),
-        inset 0 0 20px rgba(255, 215, 0, 0.05);
+        0 0 12px rgba(242, 204, 96, 0.22),
+        inset 0 0 20px rgba(242, 204, 96, 0.06);
 }
 
 .item.rarity-mythic {
     --rarity-color: var(--rarity-mythic);
-    border-color: rgba(57, 255, 20, 0.4);
+    border-color: rgba(179, 0, 27, 0.65);
     box-shadow:
-        0 0 14px rgba(57, 255, 20, 0.25),
-        inset 0 0 20px rgba(57, 255, 20, 0.06);
+        0 0 18px rgba(179, 0, 27, 0.36),
+        inset 0 0 22px rgba(179, 0, 27, 0.1);
 }
 
 /* â”€â”€ Hover â”€â”€ */
@@ -1091,37 +1086,37 @@ body {
 }
 
 .hotbar-slot[data-rarity="uncommon"] {
-    background: radial-gradient(circle at center, rgba(57,255,20,0.12) 0%, rgba(5,20,5,0.4) 100%);
-    border: 1px solid rgba(57, 255, 20, 0.45);
-    box-shadow: 0 0 12px rgba(57,255,20,0.15);
+    background: radial-gradient(circle at center, rgba(52,208,88,0.15) 0%, rgba(5,20,8,0.4) 100%);
+    border: 1px solid rgba(52, 208, 88, 0.5);
+    box-shadow: 0 0 12px rgba(52,208,88,0.18);
 }
 
 .hotbar-slot[data-rarity="rare"] {
-    background: radial-gradient(circle at center, rgba(255,215,0,0.15) 0%, rgba(25,20,0,0.4) 100%);
-    border: 1px solid rgba(255, 215, 0, 0.5);
-    box-shadow: 0 0 14px rgba(255,215,0,0.18);
+    background: radial-gradient(circle at center, rgba(47,129,247,0.17) 0%, rgba(4,12,28,0.45) 100%);
+    border: 1px solid rgba(47, 129, 247, 0.55);
+    box-shadow: 0 0 14px rgba(47,129,247,0.22);
 }
 
 .hotbar-slot[data-rarity="epic"] {
-    background: radial-gradient(circle at center, rgba(255,140,0,0.18) 0%, rgba(30,15,0,0.4) 100%);
-    border: 1px solid rgba(255, 140, 0, 0.55);
-    box-shadow: 0 0 16px rgba(255,140,0,0.22);
+    background: radial-gradient(circle at center, rgba(163,113,247,0.2) 0%, rgba(20,8,34,0.45) 100%);
+    border: 1px solid rgba(163, 113, 247, 0.58);
+    box-shadow: 0 0 16px rgba(163,113,247,0.26);
 }
 
 .hotbar-slot[data-rarity="legendary"] {
-    background: radial-gradient(circle at center, rgba(255,215,0,0.22) 0%, rgba(40,30,0,0.4) 100%);
-    border: 1px solid var(--tox-yellow);
+    background: radial-gradient(circle at center, rgba(242,204,96,0.24) 0%, rgba(39,28,0,0.45) 100%);
+    border: 1px solid var(--rarity-legendary);
     box-shadow:
-        0 0 18px rgba(255,215,0,0.3),
-        inset 0 0 16px rgba(255,215,0,0.08);
+        0 0 18px rgba(242,204,96,0.32),
+        inset 0 0 16px rgba(242,204,96,0.09);
 }
 
 .hotbar-slot[data-rarity="mythic"] {
-    background: radial-gradient(circle at center, rgba(57,255,20,0.22) 0%, rgba(5,25,5,0.4) 100%);
-    border: 1px solid var(--rad-green);
+    background: radial-gradient(circle at center, rgba(179,0,27,0.3) 0%, rgba(34,0,6,0.58) 100%);
+    border: 1px solid var(--rarity-mythic);
     box-shadow:
-        0 0 18px rgba(57,255,20,0.3),
-        inset 0 0 16px rgba(57,255,20,0.08);
+        0 0 22px rgba(179,0,27,0.42),
+        inset 0 0 18px rgba(179,0,27,0.14);
 }
 
 /* â”€â”€ Active â”€â”€ */
@@ -1555,25 +1550,25 @@ body {
 
 /* â”€â”€ Shop Rarity Borders â”€â”€ */
 .shop-card.rarity-border-common    { border-left: 2px solid var(--rarity-common); box-shadow: 0 0 12px rgba(160, 170, 180, 0.15); }
-.shop-card.rarity-border-uncommon  { border-left: 2px solid var(--rarity-uncommon); box-shadow: 0 0 15px rgba(46, 204, 113, 0.2) }
-.shop-card.rarity-border-rare      { border-left: 2px solid var(--rarity-rare); box-shadow: 0 0 15px rgba(41, 182, 246, 0.25); }
-.shop-card.rarity-border-epic      { border-left: 2px solid var(--rarity-epic); box-shadow: 0 0 15px rgba(155, 89, 182, 0.3); }
-.shop-card.rarity-border-legendary { border-left: 2px solid var(--rarity-legendary); box-shadow: -2px 0 10px rgba(255,215,0,0.15); }
-.shop-card.rarity-border-mythic    { border-left: 2px solid var(--rarity-mythic); box-shadow: -2px 0 10px rgba(57,255,20,0.15); }
+.shop-card.rarity-border-uncommon  { border-left: 2px solid var(--rarity-uncommon); box-shadow: 0 0 15px rgba(52, 208, 88, 0.22); }
+.shop-card.rarity-border-rare      { border-left: 2px solid var(--rarity-rare); box-shadow: 0 0 15px rgba(47, 129, 247, 0.26); }
+.shop-card.rarity-border-epic      { border-left: 2px solid var(--rarity-epic); box-shadow: 0 0 15px rgba(163, 113, 247, 0.3); }
+.shop-card.rarity-border-legendary { border-left: 2px solid var(--rarity-legendary); box-shadow: -2px 0 12px rgba(242,204,96,0.22); }
+.shop-card.rarity-border-mythic    { border-left: 2px solid var(--rarity-mythic); box-shadow: -2px 0 14px rgba(179,0,27,0.34); }
 
 .shop-card-image.rarity-bg-common    { border-color: rgba(122,132,144,0.25); }
-.shop-card-image.rarity-bg-uncommon  { border-color: rgba(57,255,20,0.25); }
-.shop-card-image.rarity-bg-rare      { border-color: rgba(255,215,0,0.3); }
-.shop-card-image.rarity-bg-epic      { border-color: rgba(255,140,0,0.3); }
-.shop-card-image.rarity-bg-legendary { border-color: rgba(255,215,0,0.45); }
-.shop-card-image.rarity-bg-mythic    { border-color: rgba(57,255,20,0.4); }
+.shop-card-image.rarity-bg-uncommon  { border-color: rgba(52,208,88,0.3); }
+.shop-card-image.rarity-bg-rare      { border-color: rgba(47,129,247,0.34); }
+.shop-card-image.rarity-bg-epic      { border-color: rgba(163,113,247,0.36); }
+.shop-card-image.rarity-bg-legendary { border-color: rgba(242,204,96,0.48); }
+.shop-card-image.rarity-bg-mythic    { border-color: rgba(179,0,27,0.58); }
 
 .rarity-text-common    { color: var(--rarity-common); }
-.rarity-text-uncommon  { color: var(--rarity-uncommon); text-shadow: 0 0 6px rgba(57,255,20,0.4); }
-.rarity-text-rare      { color: var(--rarity-rare); text-shadow: 0 0 6px rgba(255,215,0,0.4); }
-.rarity-text-epic      { color: var(--rarity-epic); text-shadow: 0 0 6px rgba(255,140,0,0.4); }
-.rarity-text-legendary { color: var(--rarity-legendary); text-shadow: 0 0 8px rgba(255,215,0,0.5); }
-.rarity-text-mythic    { color: var(--rarity-mythic); text-shadow: 0 0 8px rgba(57,255,20,0.5); }
+.rarity-text-uncommon  { color: var(--rarity-uncommon); text-shadow: 0 0 6px rgba(52,208,88,0.42); }
+.rarity-text-rare      { color: var(--rarity-rare); text-shadow: 0 0 6px rgba(47,129,247,0.45); }
+.rarity-text-epic      { color: var(--rarity-epic); text-shadow: 0 0 7px rgba(163,113,247,0.46); }
+.rarity-text-legendary { color: var(--rarity-legendary); text-shadow: 0 0 8px rgba(242,204,96,0.52); }
+.rarity-text-mythic    { color: var(--rarity-mythic); text-shadow: 0 0 9px rgba(179,0,27,0.65); }
 
 /* ============================================================
    INVENTORY TOOLBAR â€” SEARCH & SORT
