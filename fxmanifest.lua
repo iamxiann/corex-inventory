@@ -5,7 +5,7 @@ lua54 'yes'
 name 'corex-inventory'
 description 'COREX Framework - Inventory System'
 author 'ABUGIZA'
-version '1.0.0'
+version '1.0.5'
 
 shared_scripts {
     'config.lua',
